@@ -1,0 +1,352 @@
+' mo_label_export.s2s  --  Motor Overflow: label trigger markers in the .smrx
+' Version 3.1 (Spike2 10.15) - straight DB25 cable: labels by spacing only
+' 3.1: each block (ME, AO, KMI, VMI) is recorded to its own .smrx, so a file
+'      holds 8 trials, not 32. Labels carry the trial number again:
+'      1a 1b 1c ... 8a 8b 8c. Triplets are numbered in order even when there
+'      are not exactly 8; the report then flags the count.
+' 3.0: the cable carries the strobe but not the data bits, so every marker
+'      reads the same byte (AA). The code-based decoder and the rewrite of
+'      Trig's codes are gone; trials are found by the 2.2 s / 15 s spacing.
+'      The .mat export is gone too; use Spike2's own File > Export As
+'      if a .mat file is needed.
+'
+' UNTESTED until the bench test in SETUP_INSTRUCTIONS.md Part D passes.
+'
+' What it does, for every .smrx in a folder (or one chosen file). One file is
+' one block, named {pid}_mo_{COND}.smrx (a hand, rh/lh, may follow the pid):
+'   1. finds the channel titled "Trig": a Digital Marker channel fed by the
+'      BBTK through the 1401's rear Digital Input connector, or an Event
+'      channel fed by one BBTK line,
+'   2. reads every marker's time (the codes all read the same and are ignored),
+'   3. groups them into a/b/c trials, exactly as bbtk_trigger.decode does on
+'      the Python side: a marker followed by one about 2.2 s later and another
+'      about 15 s after that makes a trial. Test pulses fall out as unmatched.
+'   4. writes a TextMark channel "Labels" with one item per marker
+'      ("1a", "1b", "1c" ... "8c"; codes = [1|2|3, 0, trial, 0]; the block is
+'      the file, so the block code is 0),
+'   5. writes {basename}_labels_report.txt beside the data file.
+' Files whose name ends "_partial" are skipped (crashed sessions).
+'
+' Lines marked VERIFY use script functions or arguments not confirmed
+' against the Spike2 10 documentation. Check them on the lab PC first.
+
+' ---- constants: MUST MATCH bbtk_trigger.py ---------------------------------
+const AB_NOMINAL_MS := 2200;      ' REST_MS + BEGIN_MS in motor_overflow9.py
+const BC_NOMINAL_MS := 15000;     ' TRIAL_SECONDS * 1000
+const AB_LO := 2150, AB_HI := 2350;      ' expected a->b spacing, ms
+const BC_LO := 14950, BC_HI := 15250;    ' expected b->c spacing, ms
+const TRIALS_PER_BLOCK% := 8;     ' one block per file
+const TRIG_TITLE$ := "Trig";
+const LABEL_TITLE$ := "Labels";
+const MAXPULSES% := 4000;         ' room for the markers of one file
+
+' ---- main -------------------------------------------------------------------
+var folder$, files$[1000], nFiles%, i%, vh%, fh%;
+var nDone% := 0, nBad% := 0;
+' 1 = save and close each file when it is done (folder mode).
+' 0 = leave it open so you can look at the Labels channel straight away, and
+'     save it yourself with Ctrl+S. Used for one-file runs and bench tests.
+var gClose% := 1;
+
+if Query("Process one file only?  (No = every .smrx in a folder)") = 1 then
+    gClose% := 0;
+    vh% := FileOpen("", 0, 0);              ' empty name -> Open dialog
+    if vh% > 0 then
+        ProcessFile(vh%);
+        nDone% += 1;
+    endif;
+else
+    ' VERIFY: FilePathSet with an empty path and a prompt opens a folder browser
+    if FilePathSet("", 0, "Select the folder holding the session .smrx files") <> 0 then
+        halt;
+    endif;
+    folder$ := FilePath$(0);
+    ' VERIFY: FileList type 0 = data files, filtered by the mask
+    nFiles% := FileList(files$[], 0, "*.smrx");
+    for i% := 0 to nFiles%-1 do
+        if IsPartial%(files$[i%]) = 0 then
+            ' VERIFY: FilePath$ returns the folder with a trailing backslash
+            fh% := FileOpen(folder$ + files$[i%], 0, 0);
+            if fh% > 0 then
+                ProcessFile(fh%);
+                nDone% += 1;
+            else
+                PrintLog("Could not open %s (%d)\n", files$[i%], fh%);
+                nBad% += 1;
+            endif;
+        else
+            PrintLog("Skipped partial file %s\n", files$[i%]);
+        endif;
+    next;
+endif;
+Message("mo_label_export: %d file(s) processed, %d could not be opened.\nSee the Log window and the *_labels_report.txt files.", nDone%, nBad%);
+halt;
+
+' ---- one data file ------------------------------------------------------------
+proc ProcessFile(vh%)
+var trig%, n%, k%, ch%, free%;
+var t[MAXPULSES%];                        ' marker times, ms
+var kind%;
+var a[MAXPULSES%/3+1], b[MAXPULSES%/3+1], c[MAXPULSES%/3+1];
+var um[MAXPULSES%];                       ' unmatched marker times, ms
+var nTrip%, nUm%;
+var blk%[MAXPULSES%/3+1], trl%[MAXPULSES%/3+1];
+var assigned%;
+var base$, dir$, name$, pid$, hand$, cond$;
+var mc%, code%[4], lab$;
+var nshow%;                               ' gap printing
+
+View(vh%);
+' VERIFY: FileName$(1)=drive, (2)=path, (3)=name without extension
+dir$  := FileName$(1) + FileName$(2);
+base$ := FileName$(3);
+name$ := FileName$(0);
+ParseName(base$, pid$, hand$, cond$);
+
+trig% := FindChanByTitle%(TRIG_TITLE$);
+if trig% <= 0 then
+    PrintLog("%s: no channel titled \"%s\" - skipped\n", name$, TRIG_TITLE$);
+    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "no Trig channel");
+    FileClose(0, -1);
+    return;
+endif;
+kind% := ChanKind(trig%);
+if kind% <> 5 and kind% <> 2 and kind% <> 3 then
+    PrintLog("%s: channel \"%s\" is neither a marker nor an event channel (kind %d) - wrong configuration? skipped\n", name$, TRIG_TITLE$, kind%);
+    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "Trig is neither a marker nor an event channel");
+    FileClose(0, -1);
+    return;
+endif;
+
+' 2. every marker's time, converted to ms. ChanData returns the times of a
+'    marker channel just as it does for an event channel.
+n% := ChanData(trig%, t[], 0, MaxTime());
+if n% >= MAXPULSES% then PrintLog("%s: more than %d markers; the rest were ignored\n", name$, MAXPULSES%) endif;
+for k% := 0 to n%-1 do t[k%] := t[k%] * 1000.0; next;
+
+' 3. decode (line-by-line port of bbtk_trigger.decode / assign_positions)
+Decode(t[], n%, a[], b[], c[], nTrip%, um[], nUm%);
+assigned% := AssignPositions%(nTrip%, blk%[], trl%[]);
+
+' 3b. If nothing decoded, print the first few gaps next to the windows they had
+'     to fall inside. A timing mismatch is obvious from this and invisible
+'     without it.
+if nTrip% = 0 and n% > 1 then
+    nshow% := n% - 1;
+    if nshow% > 8 then nshow% := 8 endif;
+    PrintLog("%s: NO TRIPLETS. First %d gaps in ms:\n  ", name$, nshow%);
+    for k% := 1 to nshow% do
+        PrintLog("%.0f  ", t[k%] - t[k%-1]);
+    next;
+    PrintLog("\n  a->b has to land in %d-%d ms and b->c in %d-%d ms.\n", AB_LO, AB_HI, BC_LO, BC_HI);
+endif;
+
+' 4. Labels channel: delete an old one so a re-run leaves exactly one
+ch% := FindChanByTitle%(LABEL_TITLE$);
+while ch% > 0 do
+    ChanDelete(ch%, 0);
+    ch% := FindChanByTitle%(LABEL_TITLE$);
+wend;
+free% := FreeChan%();
+if free% > 0 and nTrip% > 0 then
+    mc% := MemChan(8, 16);                ' 8 = TextMark, 16 chars per item
+    for k% := 0 to nTrip%-1 do
+        code%[1] := blk%[k%]; code%[2] := trl%[k%]; code%[3] := 0;
+        code%[0] := 1; lab$ := LabelText$(blk%[k%], trl%[k%], "a");
+        MemSetItem(mc%, 0, a[k%]/1000.0, code%[], lab$);       ' VERIFY argument order
+        code%[0] := 2; lab$ := LabelText$(blk%[k%], trl%[k%], "b");
+        MemSetItem(mc%, 0, b[k%]/1000.0, code%[], lab$);
+        code%[0] := 3; lab$ := LabelText$(blk%[k%], trl%[k%], "c");
+        MemSetItem(mc%, 0, c[k%]/1000.0, code%[], lab$);
+    next;
+    ChanTitle$(mc%, LABEL_TITLE$);
+    ChanComment$(mc%, "a/b/c per trial, from the Trig marker spacing, by mo_label_export.s2s");
+    ' VERIFY: MemSave writes the memory channel into the file as channel free%
+    if MemSave(mc%, free%) > 0 then
+        ChanDelete(mc%, 0);
+        ChanTitle$(free%, LABEL_TITLE$);
+        ChanShow(free%);
+        ' Confirm it is really in the file, and say where to look for it.
+        if FindChanByTitle%(LABEL_TITLE$) > 0 then
+            PrintLog("%s: Labels written to CHANNEL %d, %d items. Right-click it and set Draw Mode to Text to read the labels.\n", name$, free%, nTrip% * 3);
+        else
+            PrintLog("%s: *** MemSave reported success but no channel titled \"%s\" can be found ***\n", name$, LABEL_TITLE$);
+        endif;
+    else
+        PrintLog("%s: *** MemSave into channel %d FAILED - no Labels channel was written ***\n", name$, free%);
+    endif;
+else
+    PrintLog("%s: no Labels channel written (free channel %d, triplets %d)\n", name$, free%, nTrip%);
+endif;
+
+' 5. report
+WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, n%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], 1, "");
+PrintLog("%s: %d markers, %d triplets, %d unmatched, positions %s\n", name$, n%, nTrip%, nUm%, PosText$(assigned%, nTrip%));
+
+' 6. finish with the file
+if gClose% = 1 then
+    ' VERIFY: query% 1 = save changes without asking. If this turns out to
+    ' discard instead of save, the Labels channel is lost and the file looks
+    ' untouched when you reopen it.
+    FileClose(0, 1);
+else
+    PrintLog("%s: LEFT OPEN so you can look at it. Labels is channel %d. If it looks right, save with Ctrl+S.\n", name$, free%);
+endif;
+end;
+
+' ---- decoder ------------------------------------------------------------------
+' t[] sorted ascending (ChanData returns the channel in order). A marker
+' followed by one within the a->b window and another within the b->c window
+' after that makes a trial. Otherwise it is left unmatched on its own and the
+' search moves one along, so one stray or missing marker costs one trial.
+' Port of bbtk_trigger.decode.
+proc Decode(t[], n%, a[], b[], c[], &nTrip%, um[], &nUm%)
+var i% := 0;
+nTrip% := 0; nUm% := 0;
+while i% < n% do
+    if (i%+2 < n%) and (t[i%+1]-t[i%] >= AB_LO) and (t[i%+1]-t[i%] <= AB_HI)
+       and (t[i%+2]-t[i%+1] >= BC_LO) and (t[i%+2]-t[i%+1] <= BC_HI) then
+        a[nTrip%] := t[i%]; b[nTrip%] := t[i%+1]; c[nTrip%] := t[i%+2];
+        nTrip% += 1;
+        i% += 3;
+    else
+        um[nUm%] := t[i%];
+        nUm% += 1;
+        i% += 1;
+    endif;
+wend;
+end;
+
+' One file is one block: triplets are numbered 1, 2, 3 ... in order, and the
+' block code is 0. Returns 1 when the file holds exactly TRIALS_PER_BLOCK%
+' triplets, 0 when it does not (the numbers are then only the order found,
+' and a lost trial shifts every number after it - check the report).
+func AssignPositions%(nTrip%, blk%[], trl%[])
+var k%;
+for k% := 0 to nTrip%-1 do
+    blk%[k%] := 0;
+    trl%[k%] := k% + 1;
+next;
+if nTrip% = TRIALS_PER_BLOCK% then return 1 endif;
+return 0;
+end;
+
+func LabelText$(blk%, trl%, letter$)
+if trl% > 0 then return Str$(trl%) + letter$ endif;
+return letter$;
+end;
+
+func PosText$(assigned%, nTrip%)
+if assigned% = 1 then return "numbered 1-" + Str$(TRIALS_PER_BLOCK%) endif;
+return "CHECK: " + Str$(nTrip%) + " triplets, expected " + Str$(TRIALS_PER_BLOCK%) + "; numbered in the order found";
+end;
+
+' ---- channels ----------------------------------------------------------------
+func FindChanByTitle%(title$)
+var list%[512], i%;
+' VERIFY: ChanList with no mask lists every channel; list%[0] holds the count
+ChanList(list%[]);
+for i% := 1 to list%[0] do
+    if ChanTitle$(list%[i%]) = title$ then return list%[i%] endif;
+next;
+return 0;
+end;
+
+' First unused channel number, or 0.
+func FreeChan%()
+var n%;
+for n% := 1 to 400 do
+    if ChanKind(n%) = 0 then return n% endif;
+next;
+return 0;
+end;
+
+' ---- report ------------------------------------------------------------------
+proc WriteReport(path$, name$, pid$, hand$, cond$, nMark%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], ok%, err$)
+var rh%, k%, d;
+var abMin, abMax, abSum, bcMin, bcMax, bcSum;
+' VERIFY: FileOpen type 8 = external text file, mode 1 = write (new file)
+rh% := FileOpen(path$, 8, 1);
+if rh% <= 0 then
+    PrintLog("Could not write report %s (%d)\n", path$, rh%);
+    return;
+endif;
+View(rh%);
+Print("Motor Overflow trigger label report\n");
+Print("file:            %s\n", name$);
+Print("pid / hand:      %s / %s\n", pid$, hand$);
+Print("condition:       %s\n", cond$);
+Print("generated:       %s %s\n", Date$(), Time$());
+Print("windows (ms):    a->b %d-%d   b->c %d-%d\n", AB_LO, AB_HI, BC_LO, BC_HI);
+if ok% = 0 then
+    Print("ERROR:           %s\n", err$);
+    FileClose(0, -1);
+    return;
+endif;
+Print("Trig markers:    %d\n", nMark%);
+Print("triplets:        %d  (expected %d, one block per file)\n", nTrip%, TRIALS_PER_BLOCK%);
+Print("labels:          %s\n", PosText$(assigned%, nTrip%));
+Print("unmatched:       %d\n", nUm%);
+for k% := 0 to nUm%-1 do
+    Print("  unmatched marker at %.3f s\n", um[k%] / 1000.0);
+next;
+if nTrip% > 0 then
+    abMin := 1e9; abMax := -1e9; abSum := 0;
+    bcMin := 1e9; bcMax := -1e9; bcSum := 0;
+    for k% := 0 to nTrip%-1 do
+        d := b[k%] - a[k%];
+        if d < abMin then abMin := d endif;
+        if d > abMax then abMax := d endif;
+        abSum += d;
+        d := c[k%] - b[k%];
+        if d < bcMin then bcMin := d endif;
+        if d > bcMax then bcMax := d endif;
+        bcSum += d;
+    next;
+    Print("a->b ms:         min %.1f  mean %.1f  max %.1f\n", abMin, abSum / nTrip%, abMax);
+    Print("b->c ms:         min %.1f  mean %.1f  max %.1f\n", bcMin, bcSum / nTrip%, bcMax);
+endif;
+FileClose(0, -1);
+end;
+
+' ---- file name -----------------------------------------------------------------
+' {pid}_mo_{COND} or {pid}_{hand}_mo_{COND} -> pid, hand, condition. The part
+' before the first "_" is the pid; rh/lh is the hand; the part after "mo" is
+' the condition. Anything missing is left as "?".
+proc ParseName(base$, &pid$, &hand$, &cond$)
+var p%, rest$, part$, afterMo%;
+pid$ := "?"; hand$ := "?"; cond$ := "?";
+p% := InStr(base$, "_");
+if p% = 0 then return endif;
+pid$ := Left$(base$, p%-1);
+rest$ := Mid$(base$, p%+1);
+afterMo% := 0;
+while Len(rest$) > 0 do
+    p% := InStr(rest$, "_");
+    if p% = 0 then
+        part$ := rest$; rest$ := "";
+    else
+        part$ := Left$(rest$, p%-1); rest$ := Mid$(rest$, p%+1);
+    endif;
+    if LCase$(part$) = "rh" or LCase$(part$) = "lh" then
+        hand$ := LCase$(part$);
+    else
+        if LCase$(part$) = "mo" then
+            afterMo% := 1;
+        else
+            if afterMo% = 1 and cond$ = "?" then cond$ := UCase$(part$) endif;
+        endif;
+    endif;
+wend;
+end;
+
+' 1 if the name (with or without extension) ends in "_partial".
+func IsPartial%(name$)
+var stem$ := name$;
+var dot% := InStr(stem$, ".smrx");
+if dot% > 0 then stem$ := Left$(stem$, dot%-1) endif;
+if Len(stem$) >= 8 then
+    if LCase$(Right$(stem$, 8)) = "_partial" then return 1 endif;
+endif;
+return 0;
+end;
