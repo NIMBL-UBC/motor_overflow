@@ -2,8 +2,6 @@
   <img src="nimbl_logo.png" alt="NIMBL logo" width="300">
 </p>
 
-# Motor Overflow task
-
 The Neuroplasticity, Imagery, and Motor Behaviour Laboratory (NIMBL) is
 dedicated to research in the areas of motor learning and stroke-related
 neuroscience, encompassing both basic and applied neuroscience. Our overarching
