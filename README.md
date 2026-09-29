@@ -1,4 +1,23 @@
+<p align="center">
+  <img src="nimbl_logo.png" alt="NIMBL logo" width="300">
+</p>
+
 # Motor Overflow task
+
+The Neuroplasticity, Imagery, and Motor Behaviour Laboratory (NIMBL) is
+dedicated to research in the areas of motor learning and stroke-related
+neuroscience, encompassing both basic and applied neuroscience. Our overarching
+goal is to improve motor learning and relearning after brain injury. Basic work
+focuses on understanding brain function and plasticity associated with motor
+learning through non-physical forms of practice (imagined practice and action
+observation). Applied work focuses on informing, developing, and testing
+interventions using non-physical forms of practice, and tools to aid such
+practice, to promote recovery after stroke.
+
+The NIMBL is funded by the Natural Sciences and Engineering Research Council of
+Canada (NSERC), and the Canadian Foundation for Innovation (CFI).
+
+## The task
 
 A touchscreen experiment for a motor-overflow study, written in Python with
 pygame. Participants tap back and forth between an X and a target on a Surface
@@ -26,6 +45,7 @@ marker reads `AA`; a Spike2 script then labels each file's 8 trials
 | `spike2/` | Spike2 sampling configuration and the script that labels the markers after a session. |
 | `CHEAT_SHEET.md` | Copy-paste cheat sheet for the lab machine. |
 | `SETUP_INSTRUCTIONS.md` | Cabling and setup walk-through. |
+| `Py-Spike2 Trigger.docx` | Write-up of the Python-to-Spike2 trigger setup. |
 | `nimbl_logo.png`, `bell.wav` | The logo on the welcome screen and the trial bell. Both optional: the task runs without them. |
 
 

@@ -1,34 +1,34 @@
-# The Motor Execution condition on its own, with no trigger link: handedness,
-# participant ID, calibration, then one ME trial at each calibrated distance.
-# Everything else comes from motor_overflow9.py, so fixes there apply here too.
 
+# Runs the Motor Execution task on its own, with no marker box: hand, participant ID,
+# calibration, then one trial at each target distance. All the screens come from
+# motor_overflow9.py, so changes there apply here too.
 import motor_overflow9 as mo
 
-# show the seconds left during each trial
+# Show the seconds left during each trial.
 mo.SHOW_COUNTDOWN = True
 
-# The study runs four trials at each distance, shuffled together. Here there is
-# one of each. Nothing is being compared across the two, so the order is written
-# down rather than counterbalanced; swap the names to run them the other way.
+# One Small trial, then one Large. Swap them to run the other way round.
 TRIAL_SIZES = ["Small", "Large"]
 
+# The condition name saved in the data, and the title shown on screen.
 CONDITION = "ME"
 LABEL     = "Motor Execution"
-# the study's ME instructions say eight trials; this runs two
+# The standard instructions, changed to say two trials instead of eight.
 INSTRUCTION = tuple(line.replace("Eight trials.", "Two trials.") for line in mo.ME_INSTRUCTION)
 
+# Ask which hand the participant uses, and lay the screen out for that hand.
 handedness = mo.screen_handedness()
 mo.configure_active_side(handedness)
 
+# Ask for the participant ID and pad it to three digits (7 becomes 007).
 pid_raw    = mo.screen_text_input("Enter Participant ID", "(001 – 999)", mo.validate_pid, max_len=3)
 pid        = f"{int(pid_raw):03d}"
 
+# Calibration measures how far the participant can comfortably reach. It repeats until
+# the experimenter accepts the result.
 calib_instruction = (mo.CALIBRATION_INSTRUCTION_RH if handedness == "rh"
                      else mo.CALIBRATION_INSTRUCTION_LH)
 
-# Calibration runs again and again until the experimenter is happy with it. The
-# instruction screen sits inside the loop on purpose: tapping Begin forces the
-# hand off the glass before calibration starts watching the screen again.
 while True:
     mo.screen_instructions(calib_instruction, "Begin", title="Calibration Instructions",
                            side=mo.button_side(handedness))
@@ -38,18 +38,17 @@ while True:
 
 mo.screen_instructions(INSTRUCTION, title=LABEL, side=mo.button_side(handedness))
 
-# The two columns run_condition would have filled in are left as they are: there
-# is no condition order here, and no block for these trials to sit in.
-# size_position stays 1 throughout because each distance runs exactly once.
+# The two target distances worked out from calibration.
 amps = {"Small": small_amp, "Large": large_amp}
 
+# Run each trial, with a pause screen after it. The trial number is saved with its data.
 for i, size in enumerate(TRIAL_SIZES, 1):
     mo.BLOCK_CTX["trial_index"]   = i
     mo.BLOCK_CTX["size_position"] = 1
 
     mo.run_task_block(pid, handedness, CONDITION, amps[size], angle, LABEL, size)
 
-    # the trial rings its own bell as its timer expires; this is just the pause after
     mo.screen_trial_complete(handedness, LABEL, i, len(TRIAL_SIZES))
 
+# Final thank-you screen.
 mo.screen_task_complete()

@@ -20,6 +20,7 @@ import os
 import sys
 import time
 
+# The marker code shared with the main task.
 import bbtk_trigger as bt
 
 
@@ -34,6 +35,7 @@ def wait_ms(trig, ms, t0):
         time.sleep(min(0.001, end - now))
 
 
+# Sends one marker and prints when it went out, or why it failed.
 def send(trig, label, start, tag=""):
     t = trig.pulse(label)
     stamp = (time.perf_counter() - start) * 1000.0
@@ -45,6 +47,7 @@ def send(trig, label, start, tag=""):
     return time.perf_counter()
 
 
+# Mode 'single': five test markers, two seconds apart.
 def run_single(trig, start):
     for i in range(5):
         t = send(trig, "test", start, f" {i + 1}")
@@ -52,6 +55,7 @@ def run_single(trig, start):
             wait_ms(trig, 2000, t)
 
 
+# Modes 'trial' and 'block': markers a, b and c with the same gaps as a real trial.
 def run_trials(trig, start, n_trials, gap_ms, block=None):
     for k in range(n_trials):
         tag = f" block {block}, trial {k + 1}" if block else f" trial {k + 1}"
@@ -65,7 +69,9 @@ def run_trials(trig, start, n_trials, gap_ms, block=None):
     return t
 
 
+# Reads the options typed at the Command Prompt, connects to the box and runs the chosen mode.
 def main():
+    # The options that can be typed after the file name.
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", default=bt.DEFAULT_PORT)
     ap.add_argument("--mock", action="store_true", help="no hardware; use the fake port")
@@ -75,6 +81,7 @@ def main():
 
     if args.mock:
         os.environ[bt.MOCK_ENV] = "1"
+    # Connect to the BBTK box. Stop here if that fails.
     trig = bt.Trigger()
     ok, msg = trig.open(args.port)
     print(("mock port" if trig.mock else "port") + f": {msg}")
@@ -84,10 +91,12 @@ def main():
         print("ports seen:", trig.list_ports() or "none")
         return 1
 
+    # How many markers Spike2 should show when this finishes.
     n_expected = {"single": 5, "trial": 3 * args.trials,
                   "block": 3 * bt.TRIALS_PER_BLOCK}[args.mode]
     print(f"mode {args.mode}: {n_expected} markers. Ctrl+C to stop.")
-    fake = trig._ser if trig.mock else None      # kept so the log survives close()
+    fake = trig._ser if trig.mock else None
+    # Send the markers. Ctrl+C stops early. The marker line is always reset at the end.
     start = time.perf_counter()
     try:
         if args.mode == "single":
@@ -96,13 +105,13 @@ def main():
             run_trials(trig, start, args.trials, 5000)
         else:
             run_trials(trig, start, bt.TRIALS_PER_BLOCK, 3000)
-        # let the line go back up before the port closes
         wait_ms(trig, bt.PULSE_MIN_MS + 5, time.perf_counter())
     except KeyboardInterrupt:
         print("\nstopped")
     finally:
         trig.close()
 
+    # Summary. In mock mode, also list every command that would have been sent to the box.
     if trig.failed:
         print(f"link failed during the run: {trig.error}")
     if fake is not None:
@@ -114,5 +123,6 @@ def main():
     return 0
 
 
+# Only run main() when this file is started directly.
 if __name__ == "__main__":
     sys.exit(main())

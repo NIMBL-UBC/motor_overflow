@@ -1,5 +1,9 @@
-
-
+# Motor Overflow study: the main program, run on the touchscreen tablet.
+# It takes the participant through the whole session (questionnaires, calibration and
+# the four task conditions) and sends timing markers to Spike2 during each trial.
+#
+# Tools this program uses. pygame draws the screens and reads touches, cv2 plays the
+# videos, and bbtk_trigger (in this folder) sends markers to Spike2.
 import sys
 import os
 import csv
@@ -21,11 +25,14 @@ import pygame
 import bbtk_trigger
 
 try:
+    # Optional extra that lets the program ask where every finger is right now.
     from pygame._sdl2 import touch as _sdl2_touch
 except ImportError:
     _sdl2_touch = None
 
 
+# Windows-only setup, so the program can ask Windows how big each touch is and whether
+# Windows thinks it is a palm. The names below come from Windows' own documentation.
 _IS_WINDOWS = sys.platform == "win32"
 
 if _IS_WINDOWS:
@@ -79,6 +86,7 @@ if _IS_WINDOWS:
     _WNDPROC = ctypes.WINFUNCTYPE(_LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
 
+# Listens to the touch messages Windows sends, recording each touch's size and palm flag.
 class _ContactGeometry:
     """How big each touch is, and whether Windows called it a palm, remembered
     against the same finger number pygame uses."""
@@ -96,6 +104,7 @@ class _ContactGeometry:
         self._proc      = None
         self._records   = {}
 
+    # Starts listening. Returns False, and does nothing, if that is not possible.
     def install(self):
         if not _IS_WINDOWS:
             self.error = "not Windows"
@@ -122,6 +131,8 @@ class _ContactGeometry:
         self.error     = ""
         return True
 
+    # Windows calls this for every message the window receives. Touch messages are read,
+    # then every message is passed on as normal.
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == WM_TOUCH:
             try:
@@ -130,6 +141,7 @@ class _ContactGeometry:
                 pass
         return _user32.CallWindowProcW(self._old_proc, hwnd, msg, wparam, lparam)
 
+    # Records the size and palm flag of each touch in one Windows touch message.
     def _read(self, wparam, lparam):
         n = wparam & 0xFFFF
         if n <= 0:
@@ -160,12 +172,14 @@ class _ContactGeometry:
             rec["palm"]    = rec["palm"] or palm
             rec["primary"] = bool(ti.dwFlags & TOUCHEVENTF_PRIMARY)
 
+    # Looks up what is known about one touch, or nothing if it is unknown.
     def get(self, finger_id):
         try:
             return self._records.get(int(finger_id))
         except (TypeError, ValueError):
             return None
 
+    # Asks Windows which touch settings the window currently has.
     def touch_window_flags(self):
         if not _IS_WINDOWS or self._hwnd is None:
             return None
@@ -174,6 +188,7 @@ class _ContactGeometry:
             return None
         return int(flags.value)
 
+    # Turns Windows' own palm filtering on or off.
     def set_windows_palm_rejection(self, enabled):
         if not self.installed:
             return False
@@ -182,9 +197,11 @@ class _ContactGeometry:
         return bool(_user32.RegisterTouchWindow(self._hwnd, wt.ULONG(flags)))
 
 
+# The one touch listener the whole program shares.
 CONTACT_GEOMETRY = _ContactGeometry()
 
 
+# Finds this computer's Desktop folder, even if it has been moved (for example into OneDrive).
 def get_desktop():
     try:
         key = winreg.OpenKey(
@@ -198,9 +215,12 @@ def get_desktop():
 
 DESKTOP = get_desktop()
 
+# All data files are saved in a 'motor_overflow' folder on the Desktop.
 STUDY_ROOT = os.path.join(DESKTOP, "motor_overflow")
 
 
+# Colours, as amounts of red, green and blue from 0 to 255. A fourth number sets how
+# see-through it is (0 = invisible, 255 = solid).
 BACKGROUND     = (  0,   0,   0)
 TEXT           = (224, 225, 226)
 TEXT_SECONDARY = (150, 150, 155)
@@ -210,46 +230,63 @@ OK             = ( 60, 200, 100)
 ZONE_FILL      = ( 80, 140, 220,  62)
 ZONE_EDGE      = ( 80, 140, 220, 150)
 
+# Screen updates per second, then sizes in pixels: the X, the target circle, and the
+# area around each that counts as touching it.
 FPS               = 60
 CROSS_RADIUS      = 26
 CIRCLE_RADIUS     = 26
 CROSS_HIT_RADIUS  = 61
 CIRCLE_HIT_RADIUS = 61
 
+# During calibration, touches this close to the X do not count as a reach.
 CALIBRATION_EXCLUSION_RADIUS = 80
 
+# The shaded wedge that calibration reaches must land in. It points 15 degrees below level,
+# out to the participant's side, and spreads 45 degrees either way. Its direction is
+# filled in once the hand is known.
 REACH_CONE_AXIS_BELOW_HORIZ_DEG = 15
 REACH_CONE_HALF_WIDTH_DEG       = 45
 REACH_CONE_AXIS_DEG             = None
 
+# Shade the touchable areas so the participant can see them.
 SHOW_TOUCH_ZONES = True
 
+# Lets the number keys (top row or keypad) be used to give ratings.
 NUM_KEYS = {getattr(pygame, f"K_{pad}{i}"): i for i in range(8) for pad in ("", "KP")}
 
+# The four conditions. ME (Motor Execution) always comes first. AO (Action Observation),
+# KMI and VMI (Kinesthetic and Visual Motor Imagery) follow in an order set by the ID.
 FIXED_CONDITIONS    = ["ME"]
 ROTATING_CONDITIONS = ["AO", "KMI", "VMI"]
 CONDITIONS  = FIXED_CONDITIONS + ROTATING_CONDITIONS
 TASK_ORDERS = list(itertools.permutations(ROTATING_CONDITIONS))
 
+# The two target distances.
 SIZES = ["Small", "Large"]
 
+# Trials per condition, trial length in seconds, and whether to show a countdown
+# (motor_execution.py turns it on).
 TRIALS_PER_CONDITION = 8
 TRIAL_SECONDS        = 15
-# motor_execution.py turns this on to show the seconds left during each ME trial
 SHOW_COUNTDOWN       = False
 
+# The same target size is never shown more than twice in a row.
 MAX_SAME_SIZE_RUN = 2
 
+# Metronome speed: 40 beats per minute, one click every 1.5 seconds, 10 per trial.
 METRONOME_BPM  = 40
 BEAT_MS        = int(round(60000 / METRONOME_BPM))
 TRIAL_BEATS    = TRIAL_SECONDS * 1000 // BEAT_MS
 
 
+# Picks the condition order from the participant ID, cycling through all six possible
+# orders of AO, KMI and VMI.
 def get_task_order(pid):
     idx = (int(pid) - 1) % len(TASK_ORDERS)
     return FIXED_CONDITIONS + list(TASK_ORDERS[idx]), idx
 
 
+# The longest run of the same item in a row. Small, Small, Large gives 2.
 def _max_run(seq):
     best = run = 1
     for a, b in zip(seq, seq[1:]):
@@ -258,6 +295,8 @@ def _max_run(seq):
     return best
 
 
+# For each condition, shuffles four Small and four Large trials so neither appears more
+# than twice in a row. The shuffle is based on the ID, so an ID always gets the same order.
 def get_trial_sequences(pid):
     half  = TRIALS_PER_CONDITION // 2
     seqs  = {}
@@ -272,6 +311,8 @@ def get_trial_sequences(pid):
     return seqs
 
 
+# The folder this file is in, which holds the videos, bell sound and logo.
+# There is one video for each hand model (a or b), hand (rh or lh) and size.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 AO_HAND_MODELS = ["a", "b"]
 AO_VIDEO_PATHS = {
@@ -282,9 +323,9 @@ AO_VIDEO_PATHS = {
 }
 
 
+# Chooses which hand video (a or b) plays in each AO trial. Random, but each size gets
+# both videos equally often.
 def get_ao_models(pid, trial_seq):
-    # Which hand video plays on each AO trial is random, but each amplitude
-    # gets every hand model equally often (2 a + 2 b per size at 8 trials).
     rng  = random.Random(int(pid) * 10 + 7)
     pool = {}
     for size in SIZES:
@@ -294,15 +335,18 @@ def get_ao_models(pid, trial_seq):
         pool[size] = picks
     return [pool[size].pop() for size in trial_seq]
 
+# Either Enter key on the keyboard.
 ENTER = (pygame.K_RETURN, pygame.K_KP_ENTER)
 
 
+# Movement Imagery Questionnaire (MIQ-3) text, from here down.
 MIQ3_INSTRUCTIONS = (
     "This questionnaire assesses your ability to imagine movements.",
     "For each item you will physically perform a movement, then imagine it.",
     "You then rate how easy or difficult that mental task was, on the scale shown.",
     "Ask the experimenter any questions now, then tell them you are ready.",
 )
+# The 12 items: number, movement, type of imagery, and which movement description to show.
 ITEMS = [
     ( 1, "Knee lift",    "kinesthetic",     "knee_lift"),
     ( 2, "Jump",         "internal_visual", "jump"),
@@ -318,6 +362,7 @@ ITEMS = [
     (12, "Waist Bend",   "external_visual", "waist_bend"),
 ]
 
+# The wording of the 1 to 7 rating scale, for seeing and for feeling.
 VISUAL_LABELS = [
     "Very hard to see", "Hard to see", "Somewhat hard to see",
     "Neutral",
@@ -330,12 +375,14 @@ KINESTHETIC_LABELS = [
     "Somewhat easy to feel", "Easy to feel", "Very easy to feel",
 ]
 
+# The display name and rating wording for each type of imagery.
 IMG_TYPE = {
     "kinesthetic":     ("Kinesthetic Imagery",    KINESTHETIC_LABELS),
     "internal_visual": ("Internal Visual Imagery", VISUAL_LABELS),
     "external_visual": ("External Visual Imagery", VISUAL_LABELS),
 }
 
+# The starting position and the movement for each MIQ-3 item.
 MOVEMENT_INSTRUCTIONS = {
     "knee_lift": (
         "Stand with your feet and legs together and your arms at your sides.",
@@ -362,6 +409,7 @@ MOVEMENT_INSTRUCTIONS = {
     ),
 }
 
+# What to imagine, for each type of imagery.
 MENTAL_TASK = {
     "kinesthetic": (
         "Assume the starting position. Attempt to feel yourself making the movement just "
@@ -382,6 +430,7 @@ MENTAL_TASK = {
     ),
 }
 
+# Mindful Attention Awareness Scale (MAAS) statements, rated 0 to 6 after each condition.
 MAAS_ITEMS = [
     "I was finding it difficult to stay focused on what was happening.",
     "I was doing something without paying attention.",
@@ -399,6 +448,7 @@ MAAS_ANCHORS = {
     6: "very much",
 }
 
+# NASA Task Load Index: six workload scales, each with its low and high ends.
 NASA_TLX_SCALES = [
     ("Mental Demand",   "Low",  "High"),
     ("Physical Demand", "Low",  "High"),
@@ -408,6 +458,8 @@ NASA_TLX_SCALES = [
     ("Frustration",     "Low",  "High"),
 ]
 
+# Demographic questions. Each option has the answer shown, examples in smaller text
+# (if any), and the short name saved in the data file.
 CULTURE_OPTIONS = [
     ("African/Black",
      "including African-American, African-Canadian, Caribbean",
@@ -465,6 +517,8 @@ GENDER_OPTIONS = [
 GENDER_SELF_KEY    = "not_listed"
 GENDER_DECLINE_KEY = "prefer_not_to_answer"
 
+# On-screen instructions. Words between *stars* are shown highlighted.
+# This one introduces the metronome.
 FAMILIARIZATION_INSTRUCTION = (
     "Next you will hear the metronome that plays during every task in this study.",
     f"It runs at *{METRONOME_BPM} beats per minute* — one click every "
@@ -476,6 +530,8 @@ FAMILIARIZATION_INSTRUCTION = (
     "Listen to the beat on the next screen for as long as you like, then continue.",
 )
 
+# Calibration: number of reaches, and the instructions (reach left with the right hand,
+# right with the left hand).
 CALIBRATION_REPS = 5
 
 
@@ -496,6 +552,8 @@ def _calibration_instruction(direction):
 CALIBRATION_INSTRUCTION_RH = _calibration_instruction("LEFT")
 CALIBRATION_INSTRUCTION_LH = _calibration_instruction("RIGHT")
 
+# Instructions for each condition. KMI and VMI share the same wording apart from what
+# to focus on.
 ME_INSTRUCTION = (
     "You will perform the same finger abduction movement you just calibrated.",
     "Rest your hand flat on the screen, index finger hovering over the X. "
@@ -548,6 +606,8 @@ AO_INSTRUCTION = (
     "Ask the experimenter any questions now, then tell them you are ready.",
 )
 
+# The feeling-or-seeing question asked after KMI and VMI. The slider runs from -50
+# (only feeling) to +50 (only seeing).
 IMAGERY_INSTRUCTION = (
     "One last question about the block you just completed.",
     "Imagery does not always come out the way it was asked for. We want to know what you "
@@ -565,8 +625,10 @@ IMAGERY_ANCHORS = {
     IMAGERY_MAX: "only saw the movement",
 }
 
+# The yes/no question asked after AO.
 AO_IMAGERY_QUESTION = "Did you find yourself performing imagery during this block?"
 
+# Introductions to the MAAS and NASA-TLX questionnaires.
 MAAS_INSTRUCTION = (
     "This scale asks about your present-moment awareness during the block you just "
     "completed.",
@@ -581,23 +643,34 @@ NASA_TLX_INSTRUCTION = (
     "Each scale runs from 0 to 100.",
 )
 
+# Keep touches and mouse clicks separate, so one touch is never counted twice.
 os.environ.setdefault("SDL_TOUCH_MOUSE_EVENTS", "0")
 os.environ.setdefault("SDL_MOUSE_TOUCH_EVENTS", "0")
 
 try:
+    # Sound settings chosen so sounds play with very little delay.
     pygame.mixer.pre_init(44100, -16, 2, 512)
 except Exception:
     pass
 
+# Start pygame, open a full-screen window, and set up the frame timer.
 pygame.init()
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
 pygame.display.set_caption("Motor Overflow Study - NIMBL @ UBCO")
 clock = pygame.time.Clock()
 
+# The link to the marker box. Its line is always reset when the program closes.
 TRIG = bbtk_trigger.Trigger()
 atexit.register(TRIG.close)
 
 
+# Touch filtering, to ignore palms and accidental touches:
+#   - use Windows' own palm filtering, and ignore anything Windows marks as a palm
+#   - PALM_AREA_PX2: ignore touches bigger than this area (0 = switched off)
+#   - PALM_AREA_RATIO: ignore touches 3 times bigger than the smallest one on the screen
+#   - BIRTH_SLACK_PX: a touch must have first landed within 25 pixels of where it counts
+#   - a touch must last 25 ms and be seen twice before it counts as arriving
+#   - a touch that has been down over 5 seconds cannot count as arriving
 USE_WINDOWS_PALM_REJECTION = True
 
 REJECT_PALM_FLAGGED = True
@@ -613,12 +686,16 @@ TOUCH_MIN_SAMPLES = 2
 
 MAX_CLAIM_AGE_MS = 5000
 
+# Start the touch listener. Finger-slide messages are switched off because only the
+# sliders need them, and they switch them back on while in use.
 CONTACT_GEOMETRY.install()
 if USE_WINDOWS_PALM_REJECTION:
     CONTACT_GEOMETRY.set_windows_palm_rejection(True)
 
 pygame.event.set_blocked(pygame.FINGERMOTION)
 
+# The bell that starts and ends each trial. If it will not load, the task carries on
+# without it.
 BELL_PATH = os.path.join(_HERE, "bell.wav")
 try:
     _bell = pygame.mixer.Sound(BELL_PATH)
@@ -634,11 +711,13 @@ def play_bell():
             pass
 
 
+# Metronome click: pitch (1000 Hz), length (40 ms) and volume (0 to 1).
 METRONOME_HZ     = 1000
 METRONOME_MS     = 40
 METRONOME_LEVEL  = 0.62
 
 
+# Builds the sound of one click: a short beep that fades in and out.
 def _click_samples(rate):
     n    = max(1, int(rate * METRONOME_MS / 1000))
     edge = max(1, int(n * 0.15))
@@ -650,6 +729,8 @@ def _click_samples(rate):
     return out
 
 
+# Builds one sound with a click on every beat of a trial. With beats=1 and
+# full_last_beat=True it builds a single beat that can repeat forever instead.
 def _build_metronome(beats=TRIAL_BEATS, full_last_beat=False):
     init = pygame.mixer.get_init()
     if init is None:
@@ -673,6 +754,8 @@ def _build_metronome(beats=TRIAL_BEATS, full_last_beat=False):
 
 
 try:
+    # Build the trial metronome and the repeating one. A sound channel is kept for the
+    # metronome alone, so the bell never cuts it off.
     _metronome = _build_metronome()
 except Exception:
     _metronome = None
@@ -691,6 +774,7 @@ except Exception:
     _metronome_channel = None
 
 
+# Start, repeat or stop the metronome. If there is no sound, these do nothing.
 def start_metronome():
     if _metronome is None or _metronome_channel is None:
         return
@@ -720,16 +804,22 @@ def stop_metronome():
         pass
 
 
+# Screen width and height, in pixels.
 W, H = screen.get_size()
 
+# Targets are kept at least this far from the edge of the screen.
 TARGET_EDGE_MARGIN = CIRCLE_HIT_RADIUS + 20
 
+# Moves the task layout down by 8% of the screen height.
 LAYOUT_DROP_FRAC = 0.08
 
+# Where the X is, and which half of the screen is used. Filled in once the hand is known.
 CROSS_POS   = None
 ACTIVE_ZONE = None
 
 
+# Lays the screen out for the participant's hand. Right-handers use the left half and
+# left-handers the right half, so the finger always reaches outward.
 def configure_active_side(handedness):
     global CROSS_POS, ACTIVE_ZONE, REACH_CONE_AXIS_DEG
     if handedness == "rh":
@@ -748,14 +838,18 @@ def configure_active_side(handedness):
     CROSS_POS = (cross_x, int(H * 0.16) + drop)
 
 
+# Buttons go on the side away from the working hand.
 def button_side(handedness):
     return "left" if handedness == "rh" else "right"
 
 
+# Messages are centred over the half of the screen being used.
 def notice_x():
     return W // 4 if ACTIVE_ZONE.left < W // 2 else W - W // 4
 
 
+# Where the target circle goes: the given distance from the X in the calibrated direction,
+# kept on screen.
 def target_position(distance, angle):
     x = CROSS_POS[0] + distance * math.cos(angle)
     y = CROSS_POS[1] + distance * math.sin(angle)
@@ -764,18 +858,23 @@ def target_position(distance, angle):
     return (x, y)
 
 
+# The target position, its real distance from the X, and whether it had to be moved in
+# to fit on screen.
 def target_geometry(distance, angle):
     pos    = target_position(distance, angle)
     actual = math.hypot(pos[0] - CROSS_POS[0], pos[1] - CROSS_POS[1])
     return pos, actual, abs(actual - distance) > 1.0
 
 
+# For close targets, the touch areas around the X and the circle are shrunk so they never
+# overlap. They stay at least 20 pixels across, with a gap between them.
 HIT_REGION_GAP = 8
 
 MIN_HIT_RADIUS  = 20
 HARD_REGION_GAP = 4
 
 
+# The size of the touch area around the X and the circle for a given target distance.
 def block_hit_radius(distance):
     limit   = min(CROSS_HIT_RADIUS, CIRCLE_HIT_RADIUS)
     ceiling = distance / 2 - HARD_REGION_GAP
@@ -783,6 +882,7 @@ def block_hit_radius(distance):
                           max(MIN_HIT_RADIUS, distance / 2 - HIT_REGION_GAP))))
 
 
+# True if a point is inside the calibration wedge. slack_px widens it a little.
 def in_reach_cone(fx, fy, slack_px=0.0):
     dx, dy = fx - CROSS_POS[0], fy - CROSS_POS[1]
     angle  = math.degrees(math.atan2(dy, dx))
@@ -794,6 +894,7 @@ def in_reach_cone(fx, fy, slack_px=0.0):
     return abs(diff) <= half
 
 
+# Shades the touchable area around the X.
 def draw_touch_zone_x(radius=None, center=None):
     if not SHOW_TOUCH_ZONES:
         return
@@ -805,6 +906,7 @@ def draw_touch_zone_x(radius=None, center=None):
     screen.blit(overlay, (cx - r, cy - r))
 
 
+# Shades the calibration wedge, leaving a gap around the X.
 def draw_touch_zone_cone():
     if not SHOW_TOUCH_ZONES:
         return
@@ -825,6 +927,7 @@ def draw_touch_zone_cone():
     overlay.set_clip(None)
     screen.blit(overlay, (0, 0))
 
+# Every size was designed for a 1280 x 800 screen. s() scales a size to fit the real screen.
 REF_W, REF_H = 1280, 800
 S = min(W / REF_W, H / REF_H)
 
@@ -833,6 +936,7 @@ def s(v):
     return int(round(v * S))
 
 
+# Text styles used throughout, all in the Cambria font.
 def mfont(size, bold=False):
     return pygame.font.SysFont("cambria", s(size), bold=bold)
 
@@ -845,10 +949,12 @@ font_xs      = mfont(18)
 font_xs_bold = mfont(18, bold=True)
 
 
+# The spacing between lines for a given text style.
 def lh(font, mult=1.10):
     return int(round(font.get_linesize() * mult))
 
 try:
+    # Load the lab logo for the welcome screen, if the file is there.
     raw  = pygame.image.load(os.path.join(_HERE, "nimbl_logo.png"))
     _lh  = s(100)
     logo = pygame.transform.smoothscale(raw, (int(raw.get_width() * _lh / raw.get_height()), _lh))
@@ -856,11 +962,13 @@ except Exception:
     logo = None
 
 
+# Drawing text. This draws text centred on a point.
 def text_c(text, font, color, cx, cy):
     img = font.render(text, True, color)
     screen.blit(img, img.get_rect(center=(cx, cy)))
 
 
+# Draws several lines of centred text, one under another.
 def multiline_c(text, font, color, cx, top, line_height=None):
     line_height = line_height if line_height is not None else lh(font)
     for line in text.split("\n"):
@@ -869,6 +977,7 @@ def multiline_c(text, font, color, cx, top, line_height=None):
     return top
 
 
+# Splits text into lines that fit a given width.
 def wrap_text(text, font, max_width):
     words = text.split()
     lines, current = [], ""
@@ -885,9 +994,11 @@ def wrap_text(text, font, max_width):
     return lines
 
 
+# In instruction text, words between these stars are shown highlighted.
 EMPHASIS_MARK = "*"
 
 
+# Splits text into words, noting which ones are highlighted.
 def emphasis_tokens(text):
     tokens   = []
     emph     = False
@@ -905,6 +1016,7 @@ def emphasis_tokens(text):
     return tokens
 
 
+# Like wrap_text, but keeps track of which words are highlighted.
 def wrap_runs(text, font, font_emph, max_width):
     space = font.size(" ")[0]
     lines, line, width = [], [], 0
@@ -922,6 +1034,7 @@ def wrap_runs(text, font, font_emph, max_width):
     return lines
 
 
+# Draws one line, with highlighted words in bold and a different colour.
 def draw_runs(line, font, font_emph, color, color_emph, x, y):
     space = font.size(" ")[0]
     for i, (word, emph) in enumerate(line):
@@ -933,9 +1046,11 @@ def draw_runs(line, font, font_emph, color, color_emph, x, y):
         x += img.get_width()
 
 
+# Text sizes to try, largest first, until the instructions fit on screen.
 INSTRUCTION_FONT_SIZES = (34, 31, 28, 26, 24, 22, 20)
 
 
+# Finds the largest text size at which a paragraph fits.
 def fit_wrapped(text, max_width, max_height, sizes=INSTRUCTION_FONT_SIZES):
     for size in sizes:
         font  = mfont(size)
@@ -946,11 +1061,13 @@ def fit_wrapped(text, max_width, max_height, sizes=INSTRUCTION_FONT_SIZES):
     return font, emph, lines
 
 
+# Space between bullet points (as a share of a line), and the bullet mark.
 INSTRUCTION_POINT_GAP = 0.6
 
 INSTRUCTION_BULLET = "•  "
 
 
+# Finds the largest text size at which a list of bullet points fits.
 def fit_points(points, max_width, max_height, sizes=INSTRUCTION_FONT_SIZES):
     for size in sizes:
         font    = mfont(size)
@@ -965,6 +1082,7 @@ def fit_points(points, max_width, max_height, sizes=INSTRUCTION_FONT_SIZES):
     return font, emph, indent, wrapped
 
 
+# Draws text wrapped to a width, starting from its top left corner. Returns where it ended.
 def draw_wrapped(text, font, color, x, y, max_width, line_height=None):
     line_height = line_height if line_height is not None else lh(font)
     for line in wrap_text(text, font, max_width):
@@ -973,6 +1091,7 @@ def draw_wrapped(text, font, color, x, y, max_width, line_height=None):
     return y
 
 
+# Shows a message (red unless told otherwise) below the working area.
 def draw_notice(text, color=None):
     if not text:
         return
@@ -988,10 +1107,12 @@ def draw_notice(text, color=None):
         y += step
 
 
+# Where the status text goes during a trial.
 def block_status_pos():
     return notice_x(), ACTIVE_ZONE.height + s(46)
 
 
+# The status text under a trial: what to do next, or the time left.
 def draw_block_footer(phase, pos, remaining=None):
     cx, cy = pos
     if phase == "wait":
@@ -1004,6 +1125,8 @@ def draw_block_footer(phase, pos, remaining=None):
         text_c(f"{remaining:0.1f}s remaining", font_small, TEXT_SECONDARY, cx, cy)
 
 
+# Draws a row of numbers to tap for a rating, with the chosen one shown larger.
+# Returns the tappable area for each number.
 def draw_rating_row(values, selection, y, anchors=None):
     values  = list(values)
     spacing = min(s(120), (W - s(160)) // max(len(values), 1))
@@ -1022,6 +1145,7 @@ def draw_rating_row(values, selection, y, anchors=None):
     return rects
 
 
+# Draws an X.
 def draw_x(pos, size=15, color=None, width=3):
     color = color or TEXT
     x, y = int(pos[0]), int(pos[1])
@@ -1029,6 +1153,8 @@ def draw_x(pos, size=15, color=None, width=3):
     pygame.draw.line(screen, color, (x + size, y - size), (x - size, y + size), width)
 
 
+# Draws the starting X. While it is waiting for a touch it is highlighted, with its
+# touch area shaded.
 def draw_cross(active, hit_radius=None, center=None):
     center = CROSS_POS if center is None else center
     if active:
@@ -1038,9 +1164,11 @@ def draw_cross(active, hit_radius=None, center=None):
         pygame.draw.circle(screen, ACCENT, center, CROSS_RADIUS, 2)
 
 
+# Counts screen updates, so finger positions are only read once per update.
 _FRAME = 0
 
 
+# Shows the newly drawn screen, and resets the marker line once a marker has finished.
 def flip():
     global _FRAME
     _FRAME += 1
@@ -1048,6 +1176,7 @@ def flip():
     TRIG.service()
 
 
+# Closing the window or pressing Esc quits the program at any time.
 def check_quit(event):
     if event.type == pygame.QUIT:
         TRIG.close()
@@ -1057,11 +1186,13 @@ def check_quit(event):
         pygame.quit(); sys.exit()
 
 
+# Standard button size and corner roundness.
 BUTTON_W      = s(300)
 BUTTON_H      = s(60)
 BUTTON_RADIUS = s(14)
 
 
+# Draws a button (centred, or at the left or right) and returns where it is.
 def draw_continue_button(label="Continue", y=None, side=None):
     if y is None:
         y = H - s(90)
@@ -1077,6 +1208,7 @@ def draw_continue_button(label="Continue", y=None, side=None):
     return rect
 
 
+# True if Windows marked this touch as a palm, or it is too big.
 def is_palm_contact(finger_id):
     record = CONTACT_GEOMETRY.get(finger_id)
     if not record:
@@ -1087,6 +1219,7 @@ def is_palm_contact(finger_id):
                 and record["max_area"] > PALM_AREA_PX2)
 
 
+# True if this touch or mouse click landed on the button. Palms are ignored.
 def is_button_touched(event, rect):
     if rect is None:
         return False
@@ -1098,11 +1231,13 @@ def is_button_touched(event, rect):
     return False
 
 
+# Like is_button_touched, but pressing Enter also counts.
 def is_button_activated(event, rect):
     return ((rect is not None and event.type == pygame.KEYDOWN and event.key in ENTER)
             or is_button_touched(event, rect))
 
 
+# If this is a new touch or click, returns where it is and which finger it was.
 def get_touch_down(event):
     if event.type == pygame.FINGERDOWN:
         if is_palm_contact(event.finger_id):
@@ -1113,6 +1248,7 @@ def get_touch_down(event):
     return None
 
 
+# If a finger lifted or the mouse button was released, returns which one.
 def get_touch_up(event):
     if event.type == pygame.FINGERUP:
         return event.finger_id
@@ -1121,10 +1257,14 @@ def get_touch_up(event):
     return None
 
 
+# Which areas of the screen accept touches right now (None means anywhere), and the
+# touches being ignored because they landed somewhere else.
 _ARMED        = None
 _BLOCKED_FIDS = set()
 
 
+# Touch areas. Each one can answer 'is this point inside me?' and can make a slightly
+# larger copy of itself. This one is a circle.
 def touch_circle(center, radius):
     cx, cy = center
     def shape(x, y):
@@ -1134,6 +1274,7 @@ def touch_circle(center, radius):
     return shape
 
 
+# A rectangular touch area, such as a button.
 def touch_rect(rect):
     if rect is None:
         def empty(x, y):
@@ -1146,6 +1287,7 @@ def touch_rect(rect):
     return shape
 
 
+# The calibration wedge as a touch area, minus the space right around the X.
 def touch_reach_wedge(slack_px=0.0):
     def shape(x, y):
         zone = ACTIVE_ZONE if not slack_px else ACTIVE_ZONE.inflate(slack_px * 2,
@@ -1160,23 +1302,27 @@ def touch_reach_wedge(slack_px=0.0):
     return shape
 
 
+# Only accept touches inside the given areas.
 def arm_touch(*shapes):
     global _ARMED
     _ARMED = [sh for sh in shapes if sh is not None]
 
 
+# Accept touches anywhere again.
 def disarm_touch():
     global _ARMED
     _ARMED = None
     _BLOCKED_FIDS.clear()
 
 
+# True if a point is inside one of the areas accepting touches.
 def _touch_allowed(x, y):
     if _ARMED is None:
         return True
     return any(shape(x, y) for shape in _ARMED)
 
 
+# What is known about one finger on the screen.
 class _Contact:
     """One touch, from landing to lifting.
 
@@ -1197,6 +1343,7 @@ class _Contact:
         self.palm      = False
         self.refresh_geometry()
 
+    # Updates the touch size and palm flag from what Windows reported.
     def refresh_geometry(self):
         geo = CONTACT_GEOMETRY.get(self.fid)
         if not geo:
@@ -1207,6 +1354,7 @@ class _Contact:
                                                                      geo["max_area"])
         self.palm = self.palm or geo["palm"]
 
+    # Records the finger's new position and roughly how fast it is moving.
     def update(self, x, y, now):
         dt = now - self.last_ms
         if dt > 0:
@@ -1217,14 +1365,17 @@ class _Contact:
         self.samples  += 1
         self.refresh_geometry()
 
+    # How long this finger has been down, in milliseconds.
     def age(self, now):
         return now - self.born_ms
 
 
+# Every finger currently on the screen.
 _contacts     = {}
 _polled_frame = -1
 
 
+# Asks pygame where every finger on the screen is right now.
 def _sdl_finger_table():
     if _sdl2_touch is None:
         return None
@@ -1241,6 +1392,8 @@ def _sdl_finger_table():
         return None
 
 
+# Updates the list of fingers on the screen, once per screen update. Fingers that were
+# already down before we started watching are marked as not seen arriving.
 def _poll_contacts():
     global _polled_frame
     if _polled_frame == _FRAME:
@@ -1270,11 +1423,13 @@ def _poll_contacts():
         _contacts.pop("mouse", None)
 
 
+# The smallest touch on the screen, used to spot a palm by comparison.
 def _smallest_known_area():
     areas = [c.area for c in _contacts.values() if c.area]
     return min(areas) if areas else None
 
 
+# Why a touch should be ignored ('palm' or 'size'), or nothing if it is fine.
 def contact_reject_reason(contact, smallest_area=None):
     if REJECT_PALM_FLAGGED and contact.palm:
         return "palm"
@@ -1289,6 +1444,7 @@ def contact_reject_reason(contact, smallest_area=None):
     return ""
 
 
+# True unless the touch should be ignored.
 def touch_is_eligible(fid):
     contact = _contacts.get(fid)
     if contact is None:
@@ -1296,6 +1452,7 @@ def touch_is_eligible(fid):
     return not contact_reject_reason(contact)
 
 
+# Every finger on the screen, and (below) those inside a given area.
 def active_fingers():
     _poll_contacts()
     return [(c.fid, c.x, c.y) for c in _contacts.values()]
@@ -1305,6 +1462,8 @@ def fingers_in(shape):
     return [c for c in active_fingers() if shape(c[1], c[2])]
 
 
+# Fingers inside an area that pass every check: not a palm, seen landing, landed nearby,
+# and (when looking for arrivals) down long enough but not too long.
 def candidates_in(shape, arrivals=False):
     _poll_contacts()
     now      = pygame.time.get_ticks()
@@ -1330,6 +1489,8 @@ def candidates_in(shape, arrivals=False):
     return out
 
 
+# A finger must be gone for 3 screen updates to count as lifted, so a brief flicker is
+# not counted. The 'lift your hand' message appears after 1.5 seconds.
 LIFT_DEBOUNCE_FRAMES = 3
 
 STALE_NOTICE_MS = 1500
@@ -1349,17 +1510,21 @@ class RegionWatch:
         self.empty_frames = 0
         self.arrival = None
 
+    # Fingers in the area that were not already there when watching began.
     def _pool(self, arrivals):
         self.stale &= {c[0] for c in fingers_in(self.shape)}
         return [(c.fid, c.x, c.y) for c in candidates_in(self.shape, arrivals)
                 if c.fid not in self.stale]
 
+    # Any such finger at all, and (below) only those that count as arriving.
     def fresh(self):
         return self._pool(False)
 
     def arrivals(self):
         return self._pool(True)
 
+    # The finger that just arrived, or nothing. If there are several, it prefers the
+    # smallest touch, then the one nearest the centre.
     def entered(self):
         arriving = self._pool(True)
         if not arriving:
@@ -1375,6 +1540,7 @@ class RegionWatch:
         cx, cy = self.center
         return min(arriving, key=lambda c: math.hypot(c[1] - cx, c[2] - cy))
 
+    # True once the area has been empty long enough.
     def lifted(self):
         if self.fresh():
             self.empty_frames = 0
@@ -1382,15 +1548,21 @@ class RegionWatch:
         self.empty_frames += 1
         return self.empty_frames >= LIFT_DEBOUNCE_FRAMES
 
+    # Like entered, but keeps the first arrival once there is one.
     def arrived(self):
         if self.arrival is None:
             self.arrival = self.entered()
         return self.arrival
 
+    # True if the only fingers in the area were already there, so the participant needs to
+    # lift and touch again.
     def blocked_by_stale(self):
         return bool(fingers_in(self.shape)) and not self.fresh()
 
 
+# Reads what has happened since the last screen update (touches, clicks, key presses).
+# Touches that should be ignored are logged and dropped; everything else is passed on.
+# on_blocked is told about touches that land outside the accepted areas.
 def pump(tlog=None, phase="", on_blocked=None):
     for event in pygame.event.get():
         if event.type == pygame.FINGERDOWN:
@@ -1431,6 +1603,9 @@ def pump(tlog=None, phase="", on_blocked=None):
         yield event
 
 
+# Trial timing. Once the finger rests on the X there are 2 seconds of rest, then the bell
+# and 'Begin' for 0.2 seconds, then the trial starts. These must match the marker timings
+# in bbtk_trigger.py. The program refuses to start if they do not.
 BEGIN_MS = 200
 
 REST_MS = 2000
@@ -1468,6 +1643,7 @@ class LiftCounter:
                 self._off     = True
                 self.n_lifts += 1
 
+    # The lift counts, ready to go into the data file.
     def columns(self):
         return {
             "lifted":              int(self.n_lifts > 0),
@@ -1477,9 +1653,10 @@ class LiftCounter:
         }
 
 
+# The start of every trial. Waits for the finger on the X (marker a), waits 2 seconds,
+# rings the bell and shows 'Begin', then starts the trial (marker b) and the metronome.
+# Returns which finger is on the X.
 def run_rest_period(tlog, draw, watch, lift=None, draw_onset=None):
-    # draw_onset, if given, draws the first frame of the trial. It is put on the
-    # screen before b fires, so marker, metronome and that frame start together.
     phase       = "wait"
     t_end       = None
     stale_since = None
@@ -1532,6 +1709,7 @@ def run_rest_period(tlog, draw, watch, lift=None, draw_onset=None):
                 return entry_fid
 
 
+# On-screen number pad, for typing the participant ID and age.
 NUMPAD_BTN_W = s(110)
 NUMPAD_BTN_H = s(82)
 NUMPAD_GAP   = s(12)
@@ -1544,6 +1722,7 @@ _NUMPAD_LAYOUT = [
 ]
 
 
+# Draws the number pad and returns where each key is.
 def draw_numpad(cx, top):
     rects = {}
     for ri, row in enumerate(_NUMPAD_LAYOUT):
@@ -1559,6 +1738,7 @@ def draw_numpad(cx, top):
     return rects
 
 
+# On-screen keyboard for typed answers. Some keys are wider, and the space bar is indented.
 KEY_BTN_W = s(104)
 KEY_BTN_H = s(70)
 KEY_GAP   = s(10)
@@ -1577,6 +1757,7 @@ _KEY_INDENT = {3: 2}
 _KEYBOARD_COLS = 10
 
 
+# Draws the keyboard (capitals when Shift is on) and returns where each key is.
 def draw_keyboard(cx, top, shift=False):
     rects = {}
     total = _KEYBOARD_COLS * KEY_BTN_W + (_KEYBOARD_COLS - 1) * KEY_GAP
@@ -1604,6 +1785,7 @@ def draw_keyboard(cx, top, shift=False):
     return rects
 
 
+# The character a key types, or nothing for Shift and Delete.
 def key_char(key, shift):
     if key in ("SHIFT", "DEL"):
         return None
@@ -1614,20 +1796,25 @@ def key_char(key, shift):
     return key
 
 
+# Saving data. Each kind of data has its own folder, which is created if needed.
 def study_folder(name):
     folder = os.path.join(STUDY_ROOT, name)
     os.makedirs(folder, exist_ok=True)
     return folder
 
 
+# The current date and time, for the data files.
 def _stamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+# A data file's name, for example 007_rh_mo_task.csv.
 def _out_path(folder, pid, handedness, name):
     return os.path.join(study_folder(folder), f"{pid}_{handedness}_mo_{name}.csv")
 
 
+# Writes rows to a spreadsheet (CSV) file. With append=True it adds to the end of the
+# file instead of replacing it.
 def _write_csv(path, rows, append=False):
     header = not (append and os.path.exists(path))
     with open(path, "a" if append else "w", newline="", encoding="utf-8") as f:
@@ -1637,6 +1824,7 @@ def _write_csv(path, rows, append=False):
         writer.writerows(rows)
 
 
+# Participant IDs that already have data, so an ID is never used twice.
 def existing_pids():
     pids = set()
     for path in glob.glob(os.path.join(STUDY_ROOT, "*", "*_*")):
@@ -1646,6 +1834,7 @@ def existing_pids():
     return pids
 
 
+# Saves the demographics and MIQ-3 ratings, with the average for each type of imagery.
 def save_initialization(pid, age, sex, ratings, handedness,
                         culture=(), culture_text="", gender="", gender_text=""):
     def sub(idxs):
@@ -1683,6 +1872,7 @@ def save_initialization(pid, age, sex, ratings, handedness,
     _write_csv(_out_path("mo_initialization", pid, handedness, "initialization"), [row])
 
 
+# Saves each calibration reach and the resulting target distances.
 def save_calibration(pid, handedness, vectors, peak, large, small, angle_deg):
     row = {
         "participant_id": pid,
@@ -1700,6 +1890,7 @@ def save_calibration(pid, handedness, vectors, peak, large, small, angle_deg):
     _write_csv(_out_path("mo_calibration", pid, handedness, "calibration"), [row])
 
 
+# Saves the MAAS answers reversed (6 minus the answer), so higher means more attentive.
 def save_maas(pid, handedness, condition, maas_scores):
     row  = {
         "participant_id": pid,
@@ -1714,6 +1905,7 @@ def save_maas(pid, handedness, condition, maas_scores):
     _write_csv(_out_path("mo_questionnaire", pid, handedness, "maas"), [row], append=True)
 
 
+# Saves the six NASA-TLX scores and their average.
 def save_tlx(pid, handedness, tlx_scores):
     row  = {
         "participant_id": pid,
@@ -1728,6 +1920,7 @@ def save_tlx(pid, handedness, tlx_scores):
     _write_csv(_out_path("mo_questionnaire", pid, handedness, "tlx"), [row])
 
 
+# Saves the session plan: the condition order and each condition's trial order.
 def save_session(pid, handedness, task_order, trial_seqs):
     row  = {
         "participant_id":   pid,
@@ -1757,6 +1950,7 @@ class TouchLog:
         self.rows = []
         self.t0   = pygame.time.get_ticks()
 
+    # Records one touch: when, where, and how far from the X and the target.
     def add(self, kind, phase, x, y):
         now    = pygame.time.get_ticks()
         target = TRIAL_CTX["target"]
@@ -1773,6 +1967,8 @@ class TouchLog:
         })
 
 
+# Details of the current trial, filled in as the session runs and written into each row
+# of data: where it falls in the session, the target, and the marker times.
 BLOCK_CTX = {"cond_order_index": "", "condition_position": "",
              "trial_index": "", "size_position": "", "ao_hand_model": ""}
 
@@ -1780,10 +1976,12 @@ TRIAL_CTX = {"target": None}
 
 TRIAL_TRIG = {"a": None, "b": None, "c": None}
 
+# Sets (or clears) the current target.
 def set_trial_ctx(target=None):
     TRIAL_CTX["target"] = target
 
 
+# Saves one row per trial, and every touch during it to a separate file.
 def save_task_block(pid, handedness, condition, block_label, size_label,
                     reps, seconds, touch_log, lift=None, misses=None):
     row = {
@@ -1824,6 +2022,7 @@ def save_task_block(pid, handedness, condition, block_label, size_label,
         _write_csv(_out_path("mo_task", pid, handedness, "touches"), trace, append=True)
 
 
+# Saves one row per movement in an ME trial: its timings and accuracy.
 def save_reps(pid, handedness, condition, size_label, rep_rows):
     if not rep_rows:
         return
@@ -1835,6 +2034,8 @@ def save_reps(pid, handedness, condition, size_label, rep_rows):
     _write_csv(_out_path("mo_task", pid, handedness, "reps"), rows, append=True)
 
 
+# Fills in a column for a condition's trials afterwards, such as the imagery answer given
+# after the block. It writes a temporary copy first, so the file is never left half-written.
 def update_task_column(pid, handedness, condition, column, value):
     path = _out_path("mo_task", pid, handedness, "task")
     if not os.path.exists(path):
@@ -1859,6 +2060,7 @@ def update_task_column(pid, handedness, condition, column, value):
         pass
 
 
+# Saves the feeling-or-seeing answer, and copies it into that condition's trial rows.
 def save_imagery_bias(pid, handedness, condition, value):
     row = {
         "participant_id": pid,
@@ -1873,6 +2075,7 @@ def save_imagery_bias(pid, handedness, condition, value):
     update_task_column(pid, handedness, condition, "imagery_bias", value)
 
 
+# Saves the AO yes/no answer, and copies it into the AO trial rows.
 def save_ao_imagery(pid, handedness, value):
     row = {
         "participant_id": pid,
@@ -1885,6 +2088,7 @@ def save_ao_imagery(pid, handedness, value):
     update_task_column(pid, handedness, "AO", "ao_imagery", value)
 
 
+# Checks a typed ID. Returns an error message, or nothing if it is fine.
 def validate_pid(text):
     if not text.isdigit():
         return "Participant ID must be a 3-digit number (001–999)."
@@ -1898,6 +2102,7 @@ def validate_pid(text):
     return ""
 
 
+# Checks a typed age (must be 18 or over).
 def validate_age(text):
     if not text.isdigit():
         return "Age must be a whole number."
@@ -1906,6 +2111,10 @@ def validate_age(text):
     return ""
 
 
+# Screens. Each function from here on shows one screen and waits for an answer. The
+# screen is redrawn many times a second while it waits.
+#
+# This one shows a screen until Continue is pressed.
 def wait_for_continue(draw, label="Continue"):
     while True:
         screen.fill(BACKGROUND)
@@ -1919,6 +2128,8 @@ def wait_for_continue(draw, label="Continue"):
                 return
 
 
+# A question with two big buttons, such as Left and Right. Each can also be chosen with a
+# key. With gated=True, touches outside the buttons are ignored.
 def screen_two_buttons(title, left, right, title_y=None, btn_y=None, cx=None,
                        question="", hint="", gated=False):
     BTN_W, BTN_H = s(220), s(110)
@@ -1954,6 +2165,7 @@ def screen_two_buttons(title, left, right, title_y=None, btn_y=None, cx=None,
                     return value
 
 
+# Welcome screen with the lab logo.
 def screen_welcome():
     def draw():
         if logo is not None:
@@ -1963,12 +2175,15 @@ def screen_welcome():
     wait_for_continue(draw, "Begin")
 
 
+# Which hand? Returns 'lh' or 'rh'.
 def screen_handedness():
     return screen_two_buttons("Participant Hand",
                               ("L", "Left",  pygame.K_l, "lh"),
                               ("R", "Right", pygame.K_r, "rh"))
 
 
+# A typing screen with an on-screen number pad or keyboard. The answer is checked before it
+# is accepted. Cancel (if shown) returns nothing.
 def screen_text_input(title, hint, validator, max_len=None, keys="number",
                       start_text="", allow_cancel=False):
     text  = start_text
@@ -2031,17 +2246,20 @@ def screen_text_input(title, hint, validator, max_len=None, keys="number",
                         return text
 
 
+# Sex: M or F.
 def screen_sex():
     return screen_two_buttons("Participant Sex",
                               ("M", "Male",   pygame.K_m, "M"),
                               ("F", "Female", pygame.K_f, "F"),
                               hint="or press  M / F  on keyboard")
 
+# Text sizes to try for the checklist screens, largest first, and row spacing.
 CHECKLIST_FONT_SIZES = (26, 24, 22, 20, 18, 16, 14)
 
 CHECKLIST_ROW_GAP = 0.45
 
 
+# Finds the largest text size at which every checklist option fits.
 def fit_checklist(options, max_width, max_height):
     for size in CHECKLIST_FONT_SIZES:
         name_font = mfont(size)
@@ -2057,6 +2275,7 @@ def fit_checklist(options, max_width, max_height):
     return name_font, ex_font, wrapped
 
 
+# Draws a tick box (choose several) or a round button (choose one).
 def draw_check(rect, on, multi):
     if multi:
         pygame.draw.rect(screen, ACCENT if on else TEXT_SECONDARY, rect, 2,
@@ -2076,6 +2295,9 @@ def draw_check(rect, on, multi):
             pygame.draw.circle(screen, ACCENT, centre, rect.width // 4)
 
 
+# A list of options to tick. It adds a 'describe it yourself' option, which opens the
+# keyboard, and 'prefer not to answer', which clears the others. Returns what was picked
+# and any typed answer.
 def screen_checklist(title, question, options, multi, free_key, free_label,
                      free_title, decline_key, decline_label):
     rows = list(options)
@@ -2159,6 +2381,7 @@ def screen_checklist(title, question, options, multi, free_key, free_label,
                 break
 
 
+# Cultural background (choose any that apply).
 def screen_cultural_background():
     return screen_checklist(
         "Cultural Background", CULTURE_QUESTION, CULTURE_OPTIONS, True,
@@ -2167,6 +2390,7 @@ def screen_cultural_background():
         CULTURE_DECLINE_KEY, "Prefer not to answer")
 
 
+# Gender (choose one).
 def screen_gender():
     picked, written = screen_checklist(
         "Gender", GENDER_QUESTION, GENDER_OPTIONS, False,
@@ -2175,6 +2399,7 @@ def screen_gender():
     return picked[0], written
 
 
+# Shows both MIQ-3 rating scales before the questions.
 def screen_miq3_intro():
     v_lines = [f"{i+1} — {lbl}" for i, lbl in enumerate(VISUAL_LABELS)]
     k_lines = [f"{i+1} — {lbl}" for i, lbl in enumerate(KINESTHETIC_LABELS)]
@@ -2198,6 +2423,8 @@ def screen_miq3_intro():
     wait_for_continue(draw, "Begin")
 
 
+# Asks rating questions one at a time. The participant taps a number (or presses its key),
+# then Confirm. Returns all the answers.
 def run_rating_items(n_items, values, draw_item, anchors=None, row_clear=60):
     values    = list(values)
     ratings   = [None] * n_items
@@ -2244,6 +2471,7 @@ def run_rating_items(n_items, values, draw_item, anchors=None, row_clear=60):
     return ratings
 
 
+# The 12 MIQ-3 items: starting position, movement and what to imagine, then a 1 to 7 rating.
 def screen_miq3():
     def draw_item(q_idx):
         item_num, label, img_type, move_key = ITEMS[q_idx]
@@ -2274,6 +2502,7 @@ def screen_miq3():
     return run_rating_items(12, range(1, 8), draw_item)
 
 
+# Shown after the MIQ-3.
 def screen_done(pid):
     def draw():
         text_c("Initialization Complete", font_title, OK,   W // 2, s(340))
@@ -2281,6 +2510,8 @@ def screen_done(pid):
     wait_for_continue(draw)
 
 
+# Shows instructions as bullet points (or one paragraph), as large as will fit. If side is
+# given, the button moves to that side and only the button accepts touches.
 def screen_instructions(text, button_label="Continue", title="", side=None):
     max_w  = min(W - s(160), s(1000))
     left   = (W - max_w) // 2
@@ -2336,6 +2567,7 @@ def screen_instructions(text, button_label="Continue", title="", side=None):
                 return
 
 
+# Plays the metronome with a pulsing circle until the participant continues.
 def screen_metronome_familiarization():
     start_metronome_loop()
     t0     = pygame.time.get_ticks()
@@ -2373,6 +2605,10 @@ def screen_metronome_familiarization():
                 return
 
 
+# Calibration. Five times, the participant taps the X, reaches as far as is comfortable,
+# touches down, and comes back to the X. It moves through these stages:
+# wait_x -> on_x -> in_flight -> at_max -> returning.
+# The average reach sets the targets: Large is 80% of it and Small is 30%.
 def run_calibration(pid, handedness):
     sub          = "wait_x"
     vectors      = []
@@ -2388,11 +2624,13 @@ def run_calibration(pid, handedness):
 
     start_metronome_loop()
 
+    # Shows a message for a few seconds.
     def notify(msg, seconds=3.5):
         nonlocal err, err_until
         err       = msg
         err_until = pygame.time.get_ticks() + int(seconds * 1000)
 
+    # Records the furthest touch in the wedge as this reach.
     def take_reach():
         nonlocal peak, reach_taken
         if reach_taken:
@@ -2405,6 +2643,7 @@ def run_calibration(pid, handedness):
         peak, reach_taken = (far[1], far[2]), True
         return True
 
+    # Explains why a touch did not count: too close to the X, or outside the wedge.
     def explain_blocked(fx, fy):
         if sub != "in_flight" or (err and pygame.time.get_ticks() < err_until):
             return
@@ -2439,6 +2678,7 @@ def run_calibration(pid, handedness):
         flip()
         clock.tick(FPS)
 
+        # Only accept touches where the next stage expects them.
         if sub in ("wait_x", "returning"):
             arm_touch(x_shape)
         elif sub in ("on_x", "in_flight"):
@@ -2471,6 +2711,7 @@ def run_calibration(pid, handedness):
             if x_watch.arrived():
                 vectors.append((peak[0] - CROSS_POS[0], peak[1] - CROSS_POS[1]))
                 reps += 1; err = ""
+                # All reaches done: average them, work out the two target distances, and save.
                 if reps >= CALIBRATION_REPS:
                     avg_dx    = sum(v[0] for v in vectors) / len(vectors)
                     avg_dy    = sum(v[1] for v in vectors) / len(vectors)
@@ -2491,6 +2732,7 @@ def run_calibration(pid, handedness):
                 notify("Lift your hand and place your index finger back on the X.")
 
 
+# Shows the calibration result and both targets, with Redo Calibration or Begin Task.
 def screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness):
     large_pos, large_actual, large_clamped = target_geometry(large_amp, angle)
     small_pos, small_actual, small_clamped = target_geometry(small_amp, angle)
@@ -2533,6 +2775,8 @@ def screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness):
                 disarm_touch()
                 return "continue"
 
+# One KMI or VMI trial. The finger rests on the X for 15 seconds while the participant
+# imagines the movement. Any lifts from the X are counted.
 def run_covert_timed_block(pid, handedness, condition, amp, angle, task_type,
                            size_label, seconds=TRIAL_SECONDS):
     target  = target_position(amp, angle)
@@ -2577,6 +2821,8 @@ def run_covert_timed_block(pid, handedness, condition, amp, angle, task_type,
         lift.update()
 
 
+# Action Observation videos. Pixels darker than this count as the black bars around a
+# video. A strip at the side (38% of the width) holds the X, and the video fills the rest.
 AO_LETTERBOX_LEVEL = 12
 
 AO_FIXATION_STRIP_FRAC = 0.38
@@ -2585,6 +2831,7 @@ AO_FIXATION_STRIP      = int(W * AO_FIXATION_STRIP_FRAC)
 AO_FIXATION_Y_FRAC = 0.30
 
 
+# Where the X goes during AO, and (below) the area the video fills.
 def ao_cross_pos(handedness):
     return (W - AO_FIXATION_STRIP // 2 if handedness == "rh" else AO_FIXATION_STRIP // 2,
             int(H * AO_FIXATION_Y_FRAC))
@@ -2595,6 +2842,7 @@ def ao_video_area(handedness):
     return pygame.Rect(0 if handedness == "rh" else AO_FIXATION_STRIP, 0, width, H)
 
 
+# Finds the picture inside a video's black bars by checking a few frames.
 def ao_content_box(cap, samples=5):
     full = (0, 0,
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 0,
@@ -2625,9 +2873,8 @@ def ao_content_box(cap, samples=5):
     return (x, y, w, h)
 
 
+# Crops and resizes one video frame to fit the video area, centred.
 def ao_frame_surface(frame, box, area):
-    # The videos are landscape and are shown as recorded. A linear resize is
-    # plenty for a scale this close to 1.
     x, y, w, h = box
     frame = frame[y:y + h, x:x + w]
     scale = min(area.width / w, area.height / h)
@@ -2640,14 +2887,13 @@ def ao_frame_surface(frame, box, area):
                   area.y + (area.height - fh) // 2)
 
 
-# Finding each video's letterbox means seeking through it, which takes a second
-# or more per file. Doing that when a trial starts froze the screen right after
-# Continue was tapped, so it is done once per video, off the main thread, while
-# the AO instructions are being read.
-_AO_BOXES  = {}     # video path -> content box
+# Finding the black bars is slow, so it is done for every video in the background while
+# the AO instructions are being read, and the results are kept here.
+_AO_BOXES  = {}
 _ao_loader = None
 
 
+# Checks every video for this hand.
 def _ao_load(handedness):
     for model in AO_HAND_MODELS:
         for size in SIZES:
@@ -2663,6 +2909,7 @@ def _ao_load(handedness):
                 cap.release()
 
 
+# Starts that checking in the background.
 def start_ao_loading(handedness):
     global _ao_loader
     if _ao_loader is None or not _ao_loader.is_alive():
@@ -2670,6 +2917,7 @@ def start_ao_loading(handedness):
         _ao_loader.start()
 
 
+# Shows 'Loading the videos...' if the checking has not finished yet.
 def wait_for_ao_loading():
     while _ao_loader is not None and _ao_loader.is_alive():
         screen.fill(BACKGROUND)
@@ -2681,12 +2929,15 @@ def wait_for_ao_loading():
             check_quit(event)
 
 
+# A video's picture area, working it out now if it is not known yet.
 def ao_box(path, cap):
     if path not in _AO_BOXES:
         _AO_BOXES[path] = ao_content_box(cap)
     return _AO_BOXES[path]
 
 
+# One AO trial. The finger rests on the X while a hand video plays for 15 seconds. If the
+# video file is missing, the experimenter can skip the trial.
 def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS):
     video_path = AO_VIDEO_PATHS[(model, handedness, size_label)]
     missing    = not os.path.exists(video_path)
@@ -2705,17 +2956,15 @@ def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS)
         draw_cross(True, CROSS_HIT_RADIUS, cross)
         draw_block_footer(phase, (cross[0], s(120)))
 
-    # Show the gate straight away so the Continue that led here is answered at
-    # once, then open the video behind it.
     draw_gate("wait")
     flip()
 
+    # Open the video and prepare its first frame while the start screen is up, so the first
+    # frame, marker b and the first click all happen together.
     cap = None if missing else cv2.VideoCapture(video_path)
     fps = FPS if missing else (cap.get(cv2.CAP_PROP_FPS) or 30)
     box = None if missing else ao_box(video_path, cap)
 
-    # The first frame is decoded and scaled now, during the gate, so it can go
-    # on the screen in the same frame as marker b and the first metronome click.
     first = None
     if not missing:
         ok, frame = cap.read()
@@ -2761,11 +3010,11 @@ def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS)
     last  = first
     spent = first is None
 
+    # Play the video in time with the clock, skipping frames if the computer falls behind.
     while pygame.time.get_ticks() < t_end:
         elapsed = pygame.time.get_ticks() - t_onset
         want    = int(elapsed * fps / 1000) + 1
         while not spent and shown < want:
-            # frames we are too late for are skipped without being decoded
             if shown < want - 1:
                 ok = cap.grab()
             else:
@@ -2796,6 +3045,7 @@ def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS)
     disarm_touch()
 
 
+# MAAS introduction, then (below) its five statements.
 def screen_maas_intro():
     def draw():
         text_c("Present-Moment Experiences", font_title, TEXT, W // 2, s(60))
@@ -2825,11 +3075,13 @@ def screen_maas():
                             anchors=MAAS_ANCHORS, row_clear=96)
 
 
+# Sliders span the middle two-thirds of the screen.
 SLIDER_X1 = W // 6
 SLIDER_X2 = W - W // 6
 SLIDER_W  = SLIDER_X2 - SLIDER_X1
 
 
+# Converts between a slider's value and its position on screen.
 class SliderTrack:
     def __init__(self, lo, hi, step=1):
         self.lo, self.hi, self.step = lo, hi, step
@@ -2872,6 +3124,7 @@ class SliderDrag:
         return None
 
 
+# The six NASA-TLX sliders, 0 to 100 in steps of 5, all starting at 50.
 def screen_nasa_tlx():
     pygame.event.set_allowed(pygame.FINGERMOTION)
     values   = [50] * 6
@@ -2922,6 +3175,7 @@ def screen_nasa_tlx():
                 return values
 
 
+# One slider from -50 (only feeling) to +50 (only seeing), starting at 0.
 def screen_imagery_slider(condition_label):
     pygame.event.set_allowed(pygame.FINGERMOTION)
     value = 0
@@ -2971,6 +3225,7 @@ def screen_imagery_slider(condition_label):
                 return value
 
 
+# The AO yes/no imagery question, with the buttons on the participant's side.
 def screen_ao_imagery_check(handedness):
     cx = W // 4 if button_side(handedness) == "left" else W - W // 4
     return screen_two_buttons("Action Observation",
@@ -2980,6 +3235,7 @@ def screen_ao_imagery_check(handedness):
                               question=AO_IMAGERY_QUESTION, gated=True)
 
 
+# Each of these asks one questionnaire and saves the answers.
 def run_ao_imagery_check(pid, handedness):
     value = screen_ao_imagery_check(handedness)
     save_ao_imagery(pid, handedness, value)
@@ -3009,6 +3265,10 @@ def run_nasa_tlx(pid, handedness):
     save_tlx(pid, handedness, tlx_scores)
 
 
+# One ME trial. For 15 seconds the participant moves from the X to the circle and back on
+# every beat. It moves through these stages: on_x -> in_flight1 -> at_circle -> returning.
+# Each completed movement is saved with its timing and accuracy, and touches that miss
+# the circle are counted.
 def run_task_block(pid, handedness, condition, amp, angle, block_label, size_label,
                    seconds=TRIAL_SECONDS):
     target       = target_position(amp, angle)
@@ -3049,6 +3309,7 @@ def run_task_block(pid, handedness, condition, amp, angle, block_label, size_lab
     def now_ms():
         return pygame.time.get_ticks() - t_onset
 
+    # Counts a touch that landed away from the target during a reach.
     def note_miss(fx, fy):
         nonlocal misses, rep_misses
         if sub not in ("on_x", "in_flight1"):
@@ -3102,6 +3363,7 @@ def run_task_block(pid, handedness, condition, amp, angle, block_label, size_lab
             if target_watch.lifted():
                 sub = "returning"
         elif sub == "returning":
+            # Back on the X: one movement is complete, so save its details.
             entry = x_watch.arrived()
             if entry is not None and hit_pos is not None:
                 reps      += 1
@@ -3128,6 +3390,7 @@ def run_task_block(pid, handedness, condition, amp, angle, block_label, size_lab
                 t_out = t_target = None
                 tlog.add("down", "returning", entry[1], entry[2])
 
+# The instructions and full name of each condition.
 CONDITION_META = {
     "ME":  (ME_INSTRUCTION,  "Motor Execution"),
     "KMI": (KMI_INSTRUCTION, "Kinesthetic Motor Imagery"),
@@ -3136,6 +3399,7 @@ CONDITION_META = {
 }
 
 
+# Pause screen after each trial. It warns if the marker link has been lost.
 def screen_trial_complete(handedness, label, trial_index, n_trials):
     last = trial_index >= n_trials
     while True:
@@ -3163,6 +3427,8 @@ def screen_trial_complete(handedness, label, trial_index, n_trials):
                 return
 
 
+# Runs one condition: its instructions, its eight trials, then its questionnaires.
+# Where each trial falls in the session is noted for the data files.
 def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
                   trial_seq, cond_position, order_index):
     side               = button_side(handedness)
@@ -3208,11 +3474,11 @@ def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
     run_maas(pid, handedness, condition)
 
 
+# First screen: connect to the marker box. Test Pulse sends a marker to check in Spike2.
+# If the box is not found, the USB ports are listed to choose from.
 def screen_trigger_setup():
     ok, reason = TRIG.open(bbtk_trigger.DEFAULT_PORT)
     ports = TRIG.list_ports() if not ok else []
-    # Ports are laid out two to a row in small buttons so that even eight of
-    # them fit under the status and instruction text on the tablet screen.
     MAX_PORT_BUTTONS = 8
     PORT_COLS = 2
     PORT_BTN_W, PORT_BTN_H, PORT_GAP = s(400), s(44), s(10)
@@ -3273,8 +3539,6 @@ def screen_trigger_setup():
                 port_btns.append((rect, device))
             if not ports:
                 text_c("No COM ports found.", font_small, TEXT_SECONDARY, W // 2, top)
-            # Rescan sits on the bottom row between Abort and Continue, so the
-            # port list never has to make room for it.
             rescan_btn = draw_continue_button("Rescan")
 
         cont_btn  = draw_continue_button("Continue", side="right")
@@ -3300,6 +3564,7 @@ def screen_trigger_setup():
                 return
 
 
+# Final thank-you screen.
 def screen_task_complete():
     def draw():
         text_c("Task Complete",               font_title, OK,   W // 2, s(360))
@@ -3307,6 +3572,7 @@ def screen_task_complete():
     wait_for_continue(draw)
 
 
+# The whole session, in order.
 def main():
     screen_trigger_setup()
 
@@ -3315,6 +3581,7 @@ def main():
 
     pid_raw    = screen_text_input("Enter Participant ID", "(001 – 999)", validate_pid, max_len=3)
     pid        = f"{int(pid_raw):03d}"
+    # Work out this participant's condition order and trial order, and save them.
     task_order, order_index = get_task_order(pid)
     trial_seqs = get_trial_sequences(pid)
     save_session(pid, handedness, task_order, trial_seqs)
@@ -3325,7 +3592,8 @@ def main():
 
     screen_miq3_intro()
     ratings = screen_miq3()
-    # Save MIQ-3 now so it survives an early exit; demographics are filled in at the end.
+    # Save the MIQ-3 now, so it is kept even if the session ends early. Age and the other
+    # details are added at the end.
     save_initialization(pid, "", "", ratings, handedness)
 
     screen_done(pid)
@@ -3342,12 +3610,14 @@ def main():
         if screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness) != "redo":
             break
 
+    # The four conditions.
     for cond_position, condition in enumerate(task_order, 1):
         run_condition(condition, pid, handedness, large_amp, small_amp, angle,
                       trial_seqs[condition], cond_position, order_index)
 
     run_nasa_tlx(pid, handedness)
 
+    # Demographics come last. Everything is then saved again with them included.
     age = int(screen_text_input("Enter Participant Age", "(must be 18 or older)", validate_age))
     sex = screen_sex()
     culture, culture_text = screen_cultural_background()
@@ -3358,5 +3628,6 @@ def main():
     screen_task_complete()
 
 
+# Only run main() when this file is started directly.
 if __name__ == "__main__":
     main()

@@ -30,37 +30,46 @@ Command line:
     py bbtk_trigger.py decode <file>    decode marker times, print a report
 """
 
+# Tools from Python's built-in library that this file uses.
 import csv
 import os
 import sys
 import time
 from datetime import datetime
 
-# Timing contract. The study script asserts that its own REST_MS + BEGIN_MS and
-# TRIAL_SECONDS * 1000 equal these two numbers, and the Spike2 labelling script
-# declares the same windows. Change them together or not at all.
-AB_NOMINAL_MS = 2200          # must equal REST_MS + BEGIN_MS in motor_overflow9.py
-BC_NOMINAL_MS = 15000         # must equal TRIAL_SECONDS * 1000
-AB_WINDOW_MS  = (2150, 2350)  # expected a->b spacing
-BC_WINDOW_MS  = (14950, 15250)# expected b->c spacing (AO frame loop can run late)
-PULSE_MIN_MS  = 5             # line held down at least this long before it goes back up
-TEST_PULSE_GAP_MS = 1000      # test pulses rate-limited
+# Timing settings, in milliseconds (1000 ms = 1 second). These must match the timings
+# in motor_overflow9.py and in the Spike2 script. If you change one, change them all.
+#   AB_NOMINAL_MS: marker a to marker b (the 2 s rest plus 0.2 s of 'Begin')
+#   BC_NOMINAL_MS: marker b to marker c (one 15 s trial)
+#   AB_WINDOW_MS / BC_WINDOW_MS: how far those gaps may drift and still count as a trial
+#   PULSE_MIN_MS: how long each marker signal is held before it is reset
+#   TEST_PULSE_GAP_MS: test markers on the setup screen are limited to one per second
+AB_NOMINAL_MS = 2200
+BC_NOMINAL_MS = 15000
+AB_WINDOW_MS  = (2150, 2350)
+BC_WINDOW_MS  = (14950, 15250)
+PULSE_MIN_MS  = 5
+TEST_PULSE_GAP_MS = 1000
+# The USB port the BBTK box is normally on, and the study layout: 8 trials per block,
+# 4 blocks per session. Setting MO_TRIGGER_MOCK to 1 runs everything without the box.
 DEFAULT_PORT  = "COM12"
 TRIALS_PER_BLOCK = 8
 BLOCKS_PER_SESSION = 4
-MOCK_ENV = "MO_TRIGGER_MOCK"  # "1" -> FakeSerial
+MOCK_ENV = "MO_TRIGGER_MOCK"
 
-# Protocol per "The Black Box ToolKit USB TTL Module v1 Guide" (USBTTLv1r18):
-# 115200 8N1, commands are two ASCII characters in capitals, outputs latch.
+# Connection speed and the short text commands the BBTK box understands (from its manual).
+# 'RR' resets it. '##' asks 'are you there?' and it replies 'XX'.
+# '80' raises the marker line and '00' drops it. Spike2 records a marker when it drops.
 BAUD = 115200
-CMD_RESET  = b"RR"  # reset the module and clear every output line
-CMD_PING   = b"##"  # the module answers PING_REPLY if it is alive and in sync
+CMD_RESET  = b"RR"
+CMD_PING   = b"##"
 PING_REPLY = b"XX"
-LINE_UP    = b"80"  # line 8 (the strobe) up: idle
-LINE_DOWN  = b"00"  # line 8 down: the 1401 records a marker
-RESET_WAIT_S = 0.1  # settle after RR before the first command
+LINE_UP    = b"80"
+LINE_DOWN  = b"00"
+RESET_WAIT_S = 0.1
 
 
+# Turns a technical error into a short message the experimenter can act on.
 def _plain_reason(port, exc):
     """A short, plain-English reason an open() failed, for the setup screen.
     The full exception text is kept separately in Trigger.error_detail."""
@@ -78,6 +87,7 @@ def _plain_reason(port, exc):
     return f"{port}: {text}" if text else f"{port}: {type(exc).__name__}"
 
 
+# A pretend BBTK box, used when running without the real hardware.
 class FakeSerial:
     """Stands in for serial.Serial in tests and in mock mode.
 
@@ -98,7 +108,7 @@ class FakeSerial:
         self.writes = []
         self._fail_after = fail_after_writes
         self._clock = clock
-        self._silent = silent      # True: never answer the ping, like a dead module
+        self._silent = silent
         self._inbox = b""
 
     def write(self, data):
@@ -125,9 +135,11 @@ class FakeSerial:
         self.is_open = False
 
 
+# Everything to do with sending markers to Spike2.
 class Trigger:
     """The BBTK strobe line. open() once, pulse() at each marker, service() every frame."""
 
+    # Starting values when the marker link is first set up. Nothing is connected yet.
     def __init__(self, clock=time.perf_counter, serial_factory=None):
         self._clock = clock
         self.mock = os.environ.get(MOCK_ENV) == "1"
@@ -136,23 +148,22 @@ class Trigger:
         elif self.mock:
             self._factory = FakeSerial
         else:
-            self._factory = None      # resolved to serial.Serial in open()
+            self._factory = None
         self._ser = None
         self.enabled = False
         self.failed = False
-        self.error = ""          # short reason, fit for the setup screen
-        self.error_detail = ""   # the full exception text, for the log
+        self.error = ""
+        self.error_detail = ""
         self.port = None
-        self.answered = False    # the module replied to the ping in open()
+        self.answered = False
         self.epoch = clock()
         self.epoch_wallclock = datetime.now().isoformat(timespec="milliseconds")
-        self._down = False       # line currently down after a marker
+        self._down = False
         self._down_at = 0.0
         self._last_test = None
         self.n_test = 0
         self.counts = {}
 
-    # --- lifetime -------------------------------------------------------------
 
     def open(self, port):
         """Open `port`, reset the module and put the line up. Returns
@@ -168,6 +179,8 @@ class Trigger:
         marker while the port is being opened. Nothing follows it at the a->b
         spacing, so the decoder leaves it unmatched."""
         self.close()
+        # Unless the pretend box is in use, load the add-on that talks to USB ports, with a
+        # clear message if it is missing.
         factory = self._factory
         if factory is None:
             try:
@@ -176,8 +189,6 @@ class Trigger:
                 self.enabled = False
                 self.error = "pyserial not installed (py -m pip install pyserial)"
                 return False, self.error
-            # An unrelated PyPI package is also called "serial" and, if
-            # installed, overwrites pyserial's files. Say so rather than crash.
             factory = getattr(serial, "Serial", None)
             if factory is None:
                 self.enabled = False
@@ -185,11 +196,10 @@ class Trigger:
                               "py -m pip uninstall -y serial pyserial && py -m pip install pyserial")
                 return False, self.error
         try:
+            # Connect, reset the box, check it answers, then raise the marker line ready for use.
             ser = factory(port, BAUD, timeout=1, write_timeout=0.05)
             ser.write(CMD_RESET)
             time.sleep(RESET_WAIT_S)
-            # The module reports input-line changes unasked; throw away
-            # anything already waiting so the ping reply is read cleanly.
             if hasattr(ser, "reset_input_buffer"):
                 ser.reset_input_buffer()
             ser.write(CMD_PING)
@@ -200,6 +210,7 @@ class Trigger:
             self.error_detail = f"{type(exc).__name__}: {exc}"
             self.error = _plain_reason(port, exc)
             return False, self.error
+        # Connected. Remember the port and whether the box answered.
         self._ser = ser
         self.port = port
         self.enabled = True
@@ -230,11 +241,10 @@ class Trigger:
             pass
         self._down = False
 
-    # --- markers --------------------------------------------------------------
 
+    # Sends one command to the box. If that fails, markers are switched off for the rest of
+    # the session and the reason is saved. The task itself carries on.
     def _write(self, data):
-        # Any failure here ends the link for the rest of the session. It is
-        # recorded so the trial rows and the trial-complete screen can say so.
         try:
             self._ser.write(data)
             return True
@@ -285,8 +295,8 @@ class Trigger:
         self.n_test += 1
         return True
 
-    # --- ports ----------------------------------------------------------------
 
+    # Lists the USB ports on this computer, for the setup screen.
     def list_ports(self):
         if self.mock:
             return [("MOCK", "FakeSerial")]
@@ -300,9 +310,9 @@ class Trigger:
             return []
 
 
-# --- decoder ----------------------------------------------------------------
-# Single source of truth. spike2/mo_label_export.s2s repeats this line for line.
 
+# The rest of this file is a checking tool, used after a session. It groups the
+# recorded markers into trials of three (a, b, c) using the gaps between them.
 def decode(times):
     """Group marker times (ms) into (a, b, c) triplets by spacing.
 
@@ -345,11 +355,13 @@ def assign_positions(triplets):
     return [(0, 0)] * n
 
 
+# True if the number of trials found matches a full session (32) or one block (8).
 def positions_assigned(triplets):
     n = len(triplets)
     return n in (TRIALS_PER_BLOCK * BLOCKS_PER_SESSION, TRIALS_PER_BLOCK)
 
 
+# The smallest, average and largest of a list of numbers.
 def _stats(values):
     if not values:
         return None
@@ -407,10 +419,13 @@ def load_marks(path):
         try:
             times.append(float(row[0].strip()))
         except ValueError:
-            continue    # header or comment line
+            continue
     return times
 
 
+# Runs when this file is started from the Command Prompt:
+#   py bbtk_trigger.py ports           lists the USB ports
+#   py bbtk_trigger.py decode <file>   checks a file of marker times
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in ("ports", "decode"):
@@ -432,5 +447,6 @@ def main(argv=None):
     return 0
 
 
+# Only run main() when this file is started directly, not when another file uses it.
 if __name__ == "__main__":
     sys.exit(main())

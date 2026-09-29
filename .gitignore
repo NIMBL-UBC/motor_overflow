@@ -22,7 +22,3 @@ EMG/
 *.mat
 PythonSpike2_Cables/
 
-# Lab-local assets and notes: kept on the machine, not in the repo. The app runs
-# without the logo.
-nimbl_logo.png
-Py-Spike2 Trigger.docx
