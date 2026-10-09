@@ -13,8 +13,10 @@ TRIAL_SIZES = ["Small", "Large"]
 # The condition name saved in the data, and the title shown on screen.
 CONDITION = "ME"
 LABEL     = "Motor Execution"
-# The standard instructions, changed to say two trials instead of eight.
-INSTRUCTION = tuple(line.replace("Eight trials.", "Two trials.") for line in mo.ME_INSTRUCTION)
+# The standard instructions, with the line about blocks changed to say two trials.
+INSTRUCTION = tuple("Two trials, one at each target distance."
+                    if line.startswith("Four blocks of eight trials.") else line
+                    for line in mo.ME_INSTRUCTION)
 
 # Ask which hand the participant uses, and lay the screen out for that hand.
 handedness = mo.screen_handedness()
@@ -43,8 +45,10 @@ amps = {"Small": small_amp, "Large": large_amp}
 
 # Run each trial, with a pause screen after it. The trial number is saved with its data.
 for i, size in enumerate(TRIAL_SIZES, 1):
-    mo.BLOCK_CTX["trial_index"]   = i
-    mo.BLOCK_CTX["size_position"] = 1
+    mo.BLOCK_CTX["trial_index"]    = i
+    mo.BLOCK_CTX["block_index"]    = 1
+    mo.BLOCK_CTX["trial_in_block"] = i
+    mo.BLOCK_CTX["size_position"]  = 1
 
     mo.run_task_block(pid, handedness, CONDITION, amps[size], angle, LABEL, size)
 

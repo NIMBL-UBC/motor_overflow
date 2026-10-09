@@ -7,9 +7,10 @@ single   5 test markers, 2 s apart. Look for 5 markers on Trig.
 trial    N trials (default 3): a, +2200 ms b, +15000 ms c, then
          a 5 s gap.
 block    one block: 8 trials, 3 s between them (about 2.5 minutes). Save the
-         Spike2 file and run mo_label_export.s2s on it: the report must show
-         8 triplets, labelled 1a 1b 1c ... 8c. Each block of the study is
-         recorded to its own Spike2 file, so this is what one file looks like.
+         Spike2 file as bench_mo_ME_S_b1.smrx and run mo_label_export.s2s on
+         it: the report must show 8 triplets, labelled 1a 1b 1c ... 8c, block
+         1, size S. Each block of the study is recorded to its own Spike2
+         file, so this is what one file looks like.
 
 Ctrl+C stops it and puts the line up. --mock uses the fake port and prints
 every write at the end so the timing can be checked without hardware.

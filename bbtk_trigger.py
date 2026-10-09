@@ -50,11 +50,10 @@ AB_WINDOW_MS  = (2150, 2350)
 BC_WINDOW_MS  = (14950, 15250)
 PULSE_MIN_MS  = 5
 TEST_PULSE_GAP_MS = 1000
-# The USB port the BBTK box is normally on, and the study layout: 8 trials per block,
-# 4 blocks per session. Setting MO_TRIGGER_MOCK to 1 runs everything without the box.
+# The USB port the BBTK box is normally on, and the trials in one block (one Spike2
+# file). Setting MO_TRIGGER_MOCK to 1 runs everything without the box.
 DEFAULT_PORT  = "COM12"
 TRIALS_PER_BLOCK = 8
-BLOCKS_PER_SESSION = 4
 MOCK_ENV = "MO_TRIGGER_MOCK"
 
 # Connection speed and the short text commands the BBTK box understands (from its manual).
@@ -341,24 +340,19 @@ def decode(times):
 
 
 def assign_positions(triplets):
-    """(block, trial) for each triplet, by count. Block 1-4 for a full session
-    (the task CSV), block 0 for a single-block file (one Spike2 file per block),
-    all zeros when the count is neither (the report then says the positions
-    were not assigned). Labels are block + letter for a session (1a ... 4c)
-    and trial + letter for a single block (1a ... 8c), as the Spike2 script
-    writes them."""
+    """Trial number for each triplet, by count: 1 ... 8 when the file holds
+    exactly one block, all zeros otherwise (the report then says the
+    positions were not assigned). Labels are trial + letter (1a ... 8c), as
+    the Spike2 script writes them."""
     n = len(triplets)
-    if n == TRIALS_PER_BLOCK * BLOCKS_PER_SESSION:
-        return [(k // TRIALS_PER_BLOCK + 1, k % TRIALS_PER_BLOCK + 1) for k in range(n)]
     if n == TRIALS_PER_BLOCK:
-        return [(0, k + 1) for k in range(n)]
-    return [(0, 0)] * n
+        return [k + 1 for k in range(n)]
+    return [0] * n
 
 
-# True if the number of trials found matches a full session (32) or one block (8).
+# True if the number of trials found matches one block (8).
 def positions_assigned(triplets):
-    n = len(triplets)
-    return n in (TRIALS_PER_BLOCK * BLOCKS_PER_SESSION, TRIALS_PER_BLOCK)
+    return len(triplets) == TRIALS_PER_BLOCK
 
 
 # The smallest, average and largest of a list of numbers.
@@ -386,32 +380,21 @@ def report(times):
         if st:
             lines.append(f"{name} ms:    min {st[0]:.1f}  mean {st[1]:.1f}  max {st[2]:.1f}")
     if positions_assigned(triplets):
-        kind = "session (4 blocks x 8)" if len(triplets) == 32 else "single block (8)"
-        lines.append(f"positions:   assigned, {kind}")
+        lines.append(f"positions:   assigned, one block ({TRIALS_PER_BLOCK})")
         lines.append("labels:      " + " ".join(
-            f"{b or t}{l}" for (b, t) in positions for l in "abc"))
+            f"{t}{l}" for t in positions for l in "abc"))
     else:
-        lines.append("positions:   UNASSIGNED (expected 32 or 8 triplets)")
+        lines.append(f"positions:   UNASSIGNED (expected {TRIALS_PER_BLOCK} triplets)")
     return lines
 
 
 def load_marks(path):
-    """Marker times (ms) from either a *_mo_task.csv (trig_a_ms, trig_b_ms,
-    trig_c_ms flattened in row order) or a file whose first column is the
-    time in ms, such as a Spike2 text export of the Trig channel. Any other
-    columns (the marker code, which is always the same) are ignored."""
+    """Marker times (ms) from a file whose first column is the time in ms,
+    such as a Spike2 text export of the Trig channel. Any other columns (the
+    marker code, which is always the same) are ignored, as are rows whose
+    first column is not a number."""
     with open(path, newline="", encoding="utf-8") as f:
-        text = f.read()
-    rows = list(csv.reader(text.splitlines()))
-    if rows and "trig_a_ms" in rows[0]:
-        header = rows[0]
-        cols = [header.index(f"trig_{k}_ms") for k in "abc"]
-        times = []
-        for row in rows[1:]:
-            for j in cols:
-                if j < len(row) and row[j].strip():
-                    times.append(float(row[j]))
-        return times
+        rows = list(csv.reader(f.read().splitlines()))
     times = []
     for row in rows:
         if not row:

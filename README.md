@@ -28,17 +28,19 @@ While the task runs, EMG is recorded on a separate PC with a CED Micro1401
 and Spike2. The two machines are kept in sync by digital markers driven by a
 Black Box Toolkit USB TTL module into the 1401's rear digital connector:
 three per trial (finger on the X, trial clock starts, closing bell), recorded
-on a Digital Marker channel. Each block is recorded to its own Spike2 file.
-The straight cable supplied with the BBTK carries only the strobe, so every
-marker reads `AA`; a Spike2 script then labels each file's 8 trials
+on a Digital Marker channel. Each condition is four blocks of 8 trials, one
+target size per block (Small, Large, Small, Large or the reverse,
+counterbalanced), and each block is recorded to its own Spike2 file, 16 per
+session. The straight cable supplied with the BBTK carries only the strobe,
+so every marker reads `AA`; a Spike2 script then labels each file's 8 trials
 `1a 1b 1c … 8c` by their 2.2 s / 15 s spacing.
 
 ## What's in here
 
 | File | What it is |
 | --- | --- |
-| `motor_overflow9.py` | The full study: sign-in, handedness, reach calibration, the four blocks, MAAS and NASA-TLX questionnaires. This is the one you run. |
-| `bbtk_trigger.py` | The trigger link to the BBTK module. Also decodes recorded marker times back into trials (`py bbtk_trigger.py decode <file>`). |
+| `motor_overflow9.py` | The full study: sign-in, handedness, reach calibration, the four conditions (4 blocks of 8 trials each), MAAS and NASA-TLX questionnaires. This is the one you run. |
+| `bbtk_trigger.py` | The trigger link to the BBTK module. Also decodes a block's recorded marker times back into trials (`py bbtk_trigger.py decode <file>`). |
 | `trigger_test.py` | Bench tool for checking the cable and Spike2 without running the task. |
 | `spike2/` | Spike2 sampling configuration and the script that labels the markers after a session. |
 | `CHEAT_SHEET.md` | Copy-paste cheat sheet for the lab machine. |
@@ -64,8 +66,8 @@ contacts), so this only runs on Windows.
 ## Output
 
 Everything a participant does is written to CSV under `mo_*` folders next to
-the script: initialisation, calibration, session order, per-trial touch logs
-with marker timestamps, and questionnaire answers. Those folders are
+the script: initialisation, calibration, session order, per-trial touch logs,
+the Spike2 file each trial belongs in, and questionnaire answers. Those folders are
 `.gitignore`d because they're data, not code. So are the AO stimulus videos,
 which live on each lab machine.
 

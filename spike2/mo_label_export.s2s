@@ -1,5 +1,10 @@
 ' mo_label_export.s2s  --  Motor Overflow: label trigger markers in the .smrx
-' Version 3.1 (Spike2 10.15) - straight DB25 cable: labels by spacing only
+' Version 3.2 (Spike2 10.15) - straight DB25 cable: labels by spacing only
+' 3.2: each condition is now 4 blocks of 8 trials (one target size per
+'      block), and each BLOCK is its own .smrx, named
+'      {pid}_mo_{COND}_{S|L}_b{n}.smrx. The block number and size are read
+'      from the name: the block goes into the Labels codes and both go into
+'      the report, which warns if either is missing from the name.
 ' 3.1: each block (ME, AO, KMI, VMI) is recorded to its own .smrx, so a file
 '      holds 8 trials, not 32. Labels carry the trial number again:
 '      1a 1b 1c ... 8a 8b 8c. Triplets are numbered in order even when there
@@ -13,7 +18,8 @@
 ' UNTESTED until the bench test in SETUP_INSTRUCTIONS.md Part D passes.
 '
 ' What it does, for every .smrx in a folder (or one chosen file). One file is
-' one block, named {pid}_mo_{COND}.smrx (a hand, rh/lh, may follow the pid):
+' one block, named {pid}_mo_{COND}_{S|L}_b{n}.smrx (a hand, rh/lh, may follow
+' the pid):
 '   1. finds the channel titled "Trig": a Digital Marker channel fed by the
 '      BBTK through the 1401's rear Digital Input connector, or an Event
 '      channel fed by one BBTK line,
@@ -22,8 +28,8 @@
 '      the Python side: a marker followed by one about 2.2 s later and another
 '      about 15 s after that makes a trial. Test pulses fall out as unmatched.
 '   4. writes a TextMark channel "Labels" with one item per marker
-'      ("1a", "1b", "1c" ... "8c"; codes = [1|2|3, 0, trial, 0]; the block is
-'      the file, so the block code is 0),
+'      ("1a", "1b", "1c" ... "8c"; codes = [1|2|3, block, trial, 0], with the
+'      block number taken from the file name, 0 if the name has none),
 '   5. writes {basename}_labels_report.txt beside the data file.
 ' Files whose name ends "_partial" are skipped (crashed sessions).
 '
@@ -92,7 +98,7 @@ var um[MAXPULSES%];                       ' unmatched marker times, ms
 var nTrip%, nUm%;
 var blk%[MAXPULSES%/3+1], trl%[MAXPULSES%/3+1];
 var assigned%;
-var base$, dir$, name$, pid$, hand$, cond$;
+var base$, dir$, name$, pid$, hand$, cond$, size$, blkNo%;
 var mc%, code%[4], lab$;
 var nshow%;                               ' gap printing
 
@@ -101,19 +107,19 @@ View(vh%);
 dir$  := FileName$(1) + FileName$(2);
 base$ := FileName$(3);
 name$ := FileName$(0);
-ParseName(base$, pid$, hand$, cond$);
+ParseName(base$, pid$, hand$, cond$, blkNo%, size$);
 
 trig% := FindChanByTitle%(TRIG_TITLE$);
 if trig% <= 0 then
     PrintLog("%s: no channel titled \"%s\" - skipped\n", name$, TRIG_TITLE$);
-    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "no Trig channel");
+    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, blkNo%, size$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "no Trig channel");
     FileClose(0, -1);
     return;
 endif;
 kind% := ChanKind(trig%);
 if kind% <> 5 and kind% <> 2 and kind% <> 3 then
     PrintLog("%s: channel \"%s\" is neither a marker nor an event channel (kind %d) - wrong configuration? skipped\n", name$, TRIG_TITLE$, kind%);
-    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "Trig is neither a marker nor an event channel");
+    WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, blkNo%, size$, 0, 0, 0, um[], 0, a[], b[], c[], 0, "Trig is neither a marker nor an event channel");
     FileClose(0, -1);
     return;
 endif;
@@ -126,7 +132,7 @@ for k% := 0 to n%-1 do t[k%] := t[k%] * 1000.0; next;
 
 ' 3. decode (line-by-line port of bbtk_trigger.decode / assign_positions)
 Decode(t[], n%, a[], b[], c[], nTrip%, um[], nUm%);
-assigned% := AssignPositions%(nTrip%, blk%[], trl%[]);
+assigned% := AssignPositions%(nTrip%, blkNo%, blk%[], trl%[]);
 
 ' 3b. If nothing decoded, print the first few gaps next to the windows they had
 '     to fall inside. A timing mismatch is obvious from this and invisible
@@ -180,7 +186,7 @@ else
 endif;
 
 ' 5. report
-WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, n%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], 1, "");
+WriteReport(dir$ + base$ + "_labels_report.txt", name$, pid$, hand$, cond$, blkNo%, size$, n%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], 1, "");
 PrintLog("%s: %d markers, %d triplets, %d unmatched, positions %s\n", name$, n%, nTrip%, nUm%, PosText$(assigned%, nTrip%));
 
 ' 6. finish with the file
@@ -218,13 +224,13 @@ wend;
 end;
 
 ' One file is one block: triplets are numbered 1, 2, 3 ... in order, and the
-' block code is 0. Returns 1 when the file holds exactly TRIALS_PER_BLOCK%
+' block code is the block number from the file name. Returns 1 when the file holds exactly TRIALS_PER_BLOCK%
 ' triplets, 0 when it does not (the numbers are then only the order found,
 ' and a lost trial shifts every number after it - check the report).
-func AssignPositions%(nTrip%, blk%[], trl%[])
+func AssignPositions%(nTrip%, blkNo%, blk%[], trl%[])
 var k%;
 for k% := 0 to nTrip%-1 do
-    blk%[k%] := 0;
+    blk%[k%] := blkNo%;
     trl%[k%] := k% + 1;
 next;
 if nTrip% = TRIALS_PER_BLOCK% then return 1 endif;
@@ -262,7 +268,7 @@ return 0;
 end;
 
 ' ---- report ------------------------------------------------------------------
-proc WriteReport(path$, name$, pid$, hand$, cond$, nMark%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], ok%, err$)
+proc WriteReport(path$, name$, pid$, hand$, cond$, blkNo%, size$, nMark%, nTrip%, assigned%, um[], nUm%, a[], b[], c[], ok%, err$)
 var rh%, k%, d;
 var abMin, abMax, abSum, bcMin, bcMax, bcSum;
 ' VERIFY: FileOpen type 8 = external text file, mode 1 = write (new file)
@@ -276,6 +282,16 @@ Print("Motor Overflow trigger label report\n");
 Print("file:            %s\n", name$);
 Print("pid / hand:      %s / %s\n", pid$, hand$);
 Print("condition:       %s\n", cond$);
+if blkNo% > 0 then
+    Print("block:           %d\n", blkNo%);
+else
+    Print("block:           ? - CHECK: no _b{n} in the file name\n");
+endif;
+if size$ = "S" or size$ = "L" then
+    Print("size:            %s\n", size$);
+else
+    Print("size:            ? - CHECK: no _S or _L in the file name\n");
+endif;
 Print("generated:       %s %s\n", Date$(), Time$());
 Print("windows (ms):    a->b %d-%d   b->c %d-%d\n", AB_LO, AB_HI, BC_LO, BC_HI);
 if ok% = 0 then
@@ -310,12 +326,13 @@ FileClose(0, -1);
 end;
 
 ' ---- file name -----------------------------------------------------------------
-' {pid}_mo_{COND} or {pid}_{hand}_mo_{COND} -> pid, hand, condition. The part
-' before the first "_" is the pid; rh/lh is the hand; the part after "mo" is
-' the condition. Anything missing is left as "?".
-proc ParseName(base$, &pid$, &hand$, &cond$)
+' {pid}_mo_{COND}_{S|L}_b{n} (a hand, rh/lh, may follow the pid) -> pid,
+' hand, condition, block, size. The part before the first "_" is the pid;
+' rh/lh is the hand; the part after "mo" is the condition; "b" + a number is
+' the block; S or L is the size. Anything missing is left as "?" (block 0).
+proc ParseName(base$, &pid$, &hand$, &cond$, &blk%, &size$)
 var p%, rest$, part$, afterMo%;
-pid$ := "?"; hand$ := "?"; cond$ := "?";
+pid$ := "?"; hand$ := "?"; cond$ := "?"; blk% := 0; size$ := "?";
 p% := InStr(base$, "_");
 if p% = 0 then return endif;
 pid$ := Left$(base$, p%-1);
@@ -334,7 +351,15 @@ while Len(rest$) > 0 do
         if LCase$(part$) = "mo" then
             afterMo% := 1;
         else
-            if afterMo% = 1 and cond$ = "?" then cond$ := UCase$(part$) endif;
+            if afterMo% = 1 and cond$ = "?" then
+                cond$ := UCase$(part$);
+            else
+                if afterMo% = 1 and Len(part$) > 1 and LCase$(Left$(part$, 1)) = "b" then
+                    blk% := Val(Mid$(part$, 2));    ' VERIFY: Val of a non-number gives 0
+                else
+                    if UCase$(part$) = "S" or UCase$(part$) = "L" then size$ := UCase$(part$) endif;
+                endif;
+            endif;
         endif;
     endif;
 wend;

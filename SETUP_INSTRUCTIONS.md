@@ -20,8 +20,11 @@ finds every marker followed by one 2.2 s later and another 15 s after that,
 writes the labels `1a 1b 1c … 8c` (trial number + letter) into the file as a
 `Labels` channel.
 
-Each block (ME, AO, KMI, VMI) is recorded to **its own Spike2 file**:
-8 trials × 3 markers = **24 markers per file**, four files per session.
+Each condition (ME, AO, KMI, VMI) is four blocks of 8 trials, one target
+size per block (Small, Large, Small, Large or the reverse, counterbalanced).
+Each block is recorded to **its own Spike2 file**: 8 trials × 3 markers =
+**24 markers per file**, 16 files per session, named
+`{pid}_mo_{COND}_{S|L}_b{n}.smrx`.
 
 How a marker travels: BBTK output line 8 is wired to the 1401's Data
 Available input (Digital Input pin 23). The line idles up; the Python sends
@@ -38,8 +41,8 @@ task carries on and simply records that the markers were not sent.
 
 | File | What it is | Who uses it, when |
 | --- | --- | --- |
-| `motor_overflow9.py` | The task, including the trigger additions: a Trigger Setup screen before the handedness screen, the three markers per trial, four trigger columns in `_mo_task.csv`, and a warning line on the Trial Complete screen if the link drops. Run this for every participant. | RA, every session |
-| `bbtk_trigger.py` | The trigger link and the decoder. Imported by the task; must sit in the same folder. Talks to the Black Box Toolkit over USB (`RR` reset, then `80` = line up, `00` = line down). Sends each marker the instant it is asked for and puts the line back up one screen frame later without ever pausing the task. Also holds `decode()`, the rule that groups marker times into a/b/c trials by their spacing — the Spike2 script is a line-by-line copy of it. From a command prompt it can list COM ports (`py bbtk_trigger.py ports`) and check a session's CSV (`py bbtk_trigger.py decode <file>`). | Task (automatically); you, for checks |
+| `motor_overflow9.py` | The task, including the trigger additions: a Trigger Setup screen before the handedness screen, the three markers per trial, a `trig_ok` column and the `spike2_file` each trial belongs in, in `_mo_task.csv`, and a warning line on the Trial Complete screen if the link drops. Run this for every participant. | RA, every session |
+| `bbtk_trigger.py` | The trigger link and the decoder. Imported by the task; must sit in the same folder. Talks to the Black Box Toolkit over USB (`RR` reset, then `80` = line up, `00` = line down). Sends each marker the instant it is asked for and puts the line back up one screen frame later without ever pausing the task. Also holds `decode()`, the rule that groups marker times into a/b/c trials by their spacing — the Spike2 script is a line-by-line copy of it. From a command prompt it can list COM ports (`py bbtk_trigger.py ports`) and check a text export of a Trig channel (`py bbtk_trigger.py decode <file>`). | Task (automatically); you, for checks |
 | `trigger_test.py` | Bench tool. Sends markers without running the task so you can watch them arrive in Spike2. `--mode single` = 5 test markers; `--mode trial` = a/b/c patterns; `--mode block` = one fake 8-trial block (~2.5 min) for testing the Spike2 script end to end. `--mock` runs it without hardware. | You, once before piloting; again if the cable is ever in doubt |
 | `bell.wav`, `nimbl_logo.png`, `ao_video_*.mp4` × 8 | Sound, logo and video stimuli. The videos are supplied per lab machine and are not in the repository. | Task |
 
@@ -99,14 +102,10 @@ py motor_overflow9.py
 ```
 
 The setup screen shows **MOCK MODE** in red. Run through a session with the
-mouse using a spare participant ID (e.g. 998). Afterwards:
-
-```
-py bbtk_trigger.py decode mo_task\998_rh_mo_task.csv
-```
-
-must print `triplets: 32`, `unmatched: 0`, `positions: assigned`. Then delete
-that ID's files from every `mo_*` folder, or the ID is blocked next time.
+mouse using a spare participant ID (e.g. 998). Afterwards
+`mo_task\998_rh_mo_task.csv` must have 128 rows, every one with
+`trig_ok = 1`. Then delete that ID's files from every `mo_*` folder, or the
+ID is blocked next time.
 
 ## 4. Part B — Hardware
 
@@ -188,8 +187,8 @@ Py Computer in the task folder. If the BBTK is not on `COM12`, add
 | --- | --- | --- |
 | 1 | Spike2: Sample → Start. Py Computer: `py trigger_test.py --mode single` | Exactly 5 markers on Trig, 2 s apart, all `AA` |
 | 2 | Start sampling. `py trigger_test.py --mode trial --trials 3` | 3 groups of 3 markers: 2.2 s then 15 s |
-| 3 | Start sampling. `py trigger_test.py --mode block` (~2.5 min). Stop; save as `bench_mo_ME.smrx` in a folder of its own | 24 markers on Trig |
-| 4 | Spike2: open `mo_label_export.s2s`, Script → Run, answer No, pick that folder | Report: `triplets: 8`, `labels: numbered 1-8`, `unmatched: 0`. Labels channel reads `1a 1b 1c … 8c` |
+| 3 | Start sampling. `py trigger_test.py --mode block` (~2.5 min). Stop; save as `bench_mo_ME_S_b1.smrx` in a folder of its own | 24 markers on Trig |
+| 4 | Spike2: open `mo_label_export.s2s`, Script → Run, answer No, pick that folder | Report: `block: 1`, `size: S`, `triplets: 8`, `labels: numbered 1-8`, `unmatched: 0`. Labels channel reads `1a 1b 1c … 8c` |
 
 Step 4 is where the script's `VERIFY` lines get exercised. If it stops with an
 error, the line number points at a call to check against Spike2 Help (press F1
@@ -211,16 +210,20 @@ header.
    per tap, reading `AA`. The screen counts them.
 7. Tap **Continue** and hand over the tablet. The rest of the session is
    unchanged.
-8. **One Spike2 file per block.** Sampling runs through calibration and
-   the first block (ME). When the **Block Complete** screen appears
-   (Trial 8 of 8): Sample → Stop, **File → Save As** → `{pid}_mo_{COND}.smrx`,
-   e.g. `012_mo_ME.smrx`. Then start a new file sampling before the
-   participant continues to the next block's instructions. Repeat for each
-   block, naming the file after that block's condition (`ME`, `AO`, `KMI`,
-   `VMI`). `012_rh_mo_AO.smrx` (with the hand) is read the same way. Do not
-   press keys in Spike2.
-9. After the last block's **Block Complete** screen, stop and save that file.
-   Leave the questionnaires unrecorded.
+8. **One Spike2 file per block, 16 per session.** Sampling runs through
+   calibration and ME block 1. At every **Block Complete** screen (Block n
+   of 4 · Trial 8 of 8): Sample → Stop, **File → Save As** →
+   `{pid}_mo_{COND}_{S|L}_b{n}.smrx`, e.g. `012_mo_ME_S_b1.smrx` (condition,
+   S or L size, block number). The block sizes are in that participant's
+   `mo_session` CSV (`{cond}_block_seq`), so note them on the checklist
+   before the session. Then start
+   a new file sampling **before** the participant taps Continue: there is
+   no intro screen, so the next block's first trial (or the next
+   condition's instructions) follows straight away. `012_rh_mo_ME_S_b1.smrx`
+   (with the hand) is read the same way. Do not press keys in Spike2.
+9. After a condition's 4th block, the questionnaires follow; the new file
+   can sample through them (nothing is marked there). After the very last
+   block, stop and save that file.
 10. Close the task; it puts the line back up and releases the port.
 
 Expected in each file: 24 task markers in groups of three (2.2 s, then 15 s
@@ -231,14 +234,14 @@ the task opened the port; the script leaves them unmatched.
 If a Trial Complete screen shows **Trigger link lost — tell the experimenter**,
 note the trial and let the session finish; see §9.
 
-**Crash:** stop sampling, save as `{pid}_mo_{COND}_partial.smrx` (the script
+**Crash:** stop sampling, save as `{pid}_mo_{COND}_{S|L}_b{n}_partial.smrx` (the script
 skips it). To rerun the same ID, first move that ID's files out of every
 `Desktop\motor_overflow\mo_*` folder into an archive folder, then restart the
 whole session with a new Spike2 file.
 
 ## 8. Part F — After recording: labelling
 
-1. Put the block `.smrx` files to process in one folder (four per session).
+1. Put the block `.smrx` files to process in one folder (16 per session).
 2. Spike2: File → Open → `mo_label_export.s2s` → **Script → Run**.
 3. First question: Yes = one file, No = whole folder.
 4. When the summary appears, read the Log window and each
@@ -248,8 +251,8 @@ Per file the script produces:
 
 | Output | Content |
 | --- | --- |
-| Labels channel, saved into the `.smrx` | One TextMark per matched marker. Text `1a 1b 1c 2a … 8c` (trial number + letter). Codes `[letter, 0, trial, 0]` where letter is 1 = a, 2 = b, 3 = c; the block code is 0 because the file is the block. Re-running replaces it. |
-| `{name}_labels_report.txt` | File name, pid/hand, condition (from the file name), number of Trig markers, number of triplets, label status, any unmatched markers, a→b and b→c min/mean/max. |
+| Labels channel, saved into the `.smrx` | One TextMark per matched marker. Text `1a 1b 1c 2a … 8c` (trial number + letter). Codes `[letter, block, trial, 0]` where letter is 1 = a, 2 = b, 3 = c, and block (1–4) comes from the file name (0 if the name has no `_b{n}`). Re-running replaces it. |
+| `{name}_labels_report.txt` | File name, pid/hand, condition, block and size (all from the file name; a missing block or size is flagged CHECK), number of Trig markers, number of triplets, label status, any unmatched markers, a→b and b→c min/mean/max. |
 
 Reading the report:
 
@@ -266,32 +269,28 @@ Reading the report:
 
 | Column | Meaning |
 | --- | --- |
-| `trig_a_ms`, `trig_b_ms`, `trig_c_ms` | when each marker's line went down, ms on the task's own clock; blank if not sent |
-| `trig_ok` | 1 if all three were sent, else 0 |
+| `spike2_file` | the Spike2 file this trial belongs in, e.g. `012_mo_ME_L_b2` |
+| `block_index`, `trial_in_block` | block 1–4 within the condition, trial 1–8 within the block |
+| `trig_ok` | 1 if all three markers were sent, else 0 |
 
 ### Joining Spike2 to the CSVs
 
-- Each item on the Labels channel carries codes `[letter, 0, trial, 0]`:
+- Each item on the Labels channel carries codes `[letter, block, trial, 0]`:
   code 1 is 1 = a, 2 = b, 3 = c. Every `b` item is a trial-clock start. Trig
   itself holds every raw marker, all `AA`, including test pulses and strays.
-- The condition comes from the file name (`{pid}_mo_{COND}.smrx`) and matches
-  `condition` in `_mo_task.csv`. Labels code 2 is always 0.
-- Labels code 3 (trial 1–8) = `trial_index`.
-- `pid` comes from the file name.
+- The file name (without `.smrx`) equals `spike2_file` in `_mo_task.csv`;
+  join on it. Labels code 2 (block) = `block_index`, code 3 (trial 1–8) =
+  `trial_in_block`.
 - EMG windows: rest baseline = a→b; trial = b→c.
-- Spike2 seconds and Python `trig_*_ms` differ by one constant per file (each
-  file starts its own clock).
-  Fit it as the median of `spike2_b − trig_b_ms/1000` over matched triplets;
-  residuals are a few ms.
 
 ### Recovering when positions are unassigned
 
 Each unmatched marker in the report is a broken trial. Use the timing to
 work out which marker survived: a lone pair about 17.2 s apart means that trial's b was lost. Count the good
-triplets before it to find its position. For
-certainty, apply the constant offset above to every CSV row's `trig_b_ms`: the
-nearest Trig marker belongs to that row's trial. Rows with
-`trig_ok = 0` tell you which marker the task itself never sent.
+triplets before it to find its position. Rows with `trig_ok = 0` tell you
+which trial's markers the task itself never sent. (The task no longer
+records its own marker times, so the gap pattern in the file is the only
+way to place a broken trial.)
 
 ## 10. Part H — Quick problem finder
 

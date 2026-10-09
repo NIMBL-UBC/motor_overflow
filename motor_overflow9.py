@@ -7,6 +7,7 @@
 import sys
 import os
 import csv
+import functools
 import glob
 import winreg
 import array
@@ -264,14 +265,14 @@ TASK_ORDERS = list(itertools.permutations(ROTATING_CONDITIONS))
 # The two target distances.
 SIZES = ["Small", "Large"]
 
-# Trials per condition, trial length in seconds, and whether to show a countdown
+# Each condition is four blocks of eight trials, and every trial in a block uses the same
+# target size. Then the trial length in seconds, and whether to show a countdown
 # (motor_execution.py turns it on).
-TRIALS_PER_CONDITION = 8
+TRIALS_PER_BLOCK     = 8
+BLOCKS_PER_CONDITION = 4
+TRIALS_PER_CONDITION = TRIALS_PER_BLOCK * BLOCKS_PER_CONDITION
 TRIAL_SECONDS        = 15
 SHOW_COUNTDOWN       = False
-
-# The same target size is never shown more than twice in a row.
-MAX_SAME_SIZE_RUN = 2
 
 # Metronome speed: 40 beats per minute, one click every 1.5 seconds, 10 per trial.
 METRONOME_BPM  = 40
@@ -286,29 +287,22 @@ def get_task_order(pid):
     return FIXED_CONDITIONS + list(TASK_ORDERS[idx]), idx
 
 
-# The longest run of the same item in a row. Small, Small, Large gives 2.
-def _max_run(seq):
-    best = run = 1
-    for a, b in zip(seq, seq[1:]):
-        run  = run + 1 if a == b else 1
-        best = max(best, run)
-    return best
-
-
-# For each condition, shuffles four Small and four Large trials so neither appears more
-# than twice in a row. The shuffle is based on the ID, so an ID always gets the same order.
-def get_trial_sequences(pid):
-    half  = TRIALS_PER_CONDITION // 2
-    seqs  = {}
-    for i, cond in enumerate(CONDITIONS):
-        rng = random.Random(int(pid) * 10 + i)
-        seq = [SIZES[0]] * half + [SIZES[1]] * half
-        for _attempt in range(1000):
-            rng.shuffle(seq)
-            if _max_run(seq) <= MAX_SAME_SIZE_RUN:
-                break
-        seqs[cond] = list(seq)
+# The block sizes for each condition: Small, Large, Small, Large or the reverse.
+# Within a session the starting size alternates with the condition's position (1st and
+# 3rd start one way, 2nd and 4th the other). Every other group of six IDs flips the
+# lot, so each of the six condition orders gets both patterns (balanced every 12 IDs).
+def get_block_sequences(pid, task_order):
+    flip = ((int(pid) - 1) // len(TASK_ORDERS)) % 2
+    seqs = {}
+    for position, cond in enumerate(task_order):
+        first = (position + flip) % 2
+        seqs[cond] = [SIZES[(first + b) % 2] for b in range(BLOCKS_PER_CONDITION)]
     return seqs
+
+
+# The expected Spike2 file name for one block, e.g. 012_mo_ME_L_b2.
+def spike2_name(pid, condition, block_index, size):
+    return f"{pid}_mo_{condition}_{size[0]}_b{block_index}"
 
 
 # The folder this file is in, which holds the videos, bell sound and logo.
@@ -323,17 +317,16 @@ AO_VIDEO_PATHS = {
 }
 
 
-# Chooses which hand video (a or b) plays in each AO trial. Random, but each size gets
-# both videos equally often.
-def get_ao_models(pid, trial_seq):
-    rng  = random.Random(int(pid) * 10 + 7)
-    pool = {}
-    for size in SIZES:
-        n     = trial_seq.count(size)
-        picks = (AO_HAND_MODELS * (n // len(AO_HAND_MODELS) + 1))[:n]
+# Chooses which hand video (a or b) plays in each AO trial, block by block. Random, but
+# every block shows both videos equally often. The shuffle is based on the ID.
+def get_ao_models(pid):
+    rng    = random.Random(int(pid) * 10 + 7)
+    blocks = []
+    for _ in range(BLOCKS_PER_CONDITION):
+        picks = AO_HAND_MODELS * (TRIALS_PER_BLOCK // len(AO_HAND_MODELS))
         rng.shuffle(picks)
-        pool[size] = picks
-    return [pool[size].pop() for size in trial_seq]
+        blocks.append(picks)
+    return blocks
 
 # Either Enter key on the keyboard.
 ENTER = (pygame.K_RETURN, pygame.K_KP_ENTER)
@@ -530,9 +523,12 @@ FAMILIARIZATION_INSTRUCTION = (
     "Listen to the beat on the next screen for as long as you like, then continue.",
 )
 
-# Calibration: number of reaches, and the instructions (reach left with the right hand,
-# right with the left hand).
+# Calibration: number of reaches, the share of the average reach used for the Large and
+# Small targets, and the instructions (reach left with the right hand, right with the
+# left hand).
 CALIBRATION_REPS = 5
+LARGE_AMP_FRAC   = 0.80
+SMALL_AMP_FRAC   = 0.30
 
 
 def _calibration_instruction(direction):
@@ -566,7 +562,8 @@ ME_INSTRUCTION = (
     "*one complete movement on every beat*.",
     "Match the metronome rather than rushing: *ten movements*, each as accurate as you can "
     "make it. A second bell ends the trial after 15 seconds.",
-    "Eight trials. The circle shows the target distance for each one.",
+    "Four blocks of eight trials. Every trial in a block uses the same target distance, "
+    "and you can rest between blocks.",
     "Ask the experimenter any questions now, then tell them you are ready.",
 )
 
@@ -584,7 +581,8 @@ def _imagery_instruction(focus):
         "Imagine *one repetition on every beat* until the second bell, 15 seconds later.",
         "You may close your eyes — the bells mark the start and the end, so you do not need "
         "to watch the screen.",
-        "Eight trials. The circle shows the target distance for each one.",
+        "Four blocks of eight trials. Every trial in a block uses the same target distance, "
+        "and you can rest between blocks.",
         "Ask the experimenter any questions now, then tell them you are ready.",
     )
 
@@ -602,7 +600,8 @@ AO_INSTRUCTION = (
     "Keep your finger on the X and your hand flat and still for the whole video, and "
     "*watch the movement closely*.",
     "The movement follows the metronome. A second bell ends the trial after 15 seconds.",
-    "Eight trials, four at each target distance.",
+    "Four blocks of eight trials. Every trial in a block uses the same target distance, "
+    "and you can rest between blocks.",
     "Ask the experimenter any questions now, then tell them you are ready.",
 )
 
@@ -1176,7 +1175,8 @@ def flip():
     TRIG.service()
 
 
-# Closing the window or pressing Esc quits the program at any time.
+# Closing the window or pressing Esc quits the program at any time. Shift+S skips the
+# current screen (see skippable below).
 def check_quit(event):
     if event.type == pygame.QUIT:
         TRIG.close()
@@ -1184,6 +1184,73 @@ def check_quit(event):
     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
         TRIG.close()
         pygame.quit(); sys.exit()
+    if (event.type == pygame.KEYDOWN and event.key == pygame.K_s
+            and event.mod & pygame.KMOD_SHIFT):
+        raise SkipScreen
+
+
+# Shift+S on the keyboard skips to the next screen. Each screen is marked @skippable with
+# what it gives back when skipped: nothing for information screens, a test value for
+# screens that ask for an answer (which is then saved as normal). A skipped trial is
+# ended on the spot and writes no data.
+class SkipScreen(Exception):
+    pass
+
+
+def skippable(default=None):
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except SkipScreen:
+                stop_metronome()
+                set_trial_ctx()
+                disarm_touch()
+                pygame.event.set_blocked(pygame.FINGERMOTION)
+                return default(*args, **kwargs) if callable(default) else default
+        return inner
+    return wrap
+
+
+# The highest participant ID with no data yet, used when the ID screen is skipped.
+def _free_test_pid():
+    taken = existing_pids()
+    for n in range(999, 0, -1):
+        if f"{n:03d}" not in taken:
+            return f"{n:03d}"
+    return "999"
+
+
+# What a skipped typing screen gives back: a free test ID, an age of 0 (plainly not
+# real), or nothing for free text (the same as Cancel).
+def _skipped_text_input(title, hint, validator, *args, **kwargs):
+    if validator is validate_pid:
+        return _free_test_pid()
+    if validator is validate_age:
+        return "0"
+    return None
+
+
+# A skipped checklist answers 'prefer not to answer'.
+def _skipped_checklist(title, question, options, multi, free_key, free_label,
+                       free_title, decline_key, decline_label):
+    return [decline_key], ""
+
+
+# A skipped calibration uses a 250 px reach along the middle of the wedge, and saves it.
+SKIP_CALIBRATION_PEAK_PX = 250
+
+
+def _skipped_calibration(pid, handedness):
+    peak  = SKIP_CALIBRATION_PEAK_PX
+    angle = math.radians(REACH_CONE_AXIS_DEG)
+    large = round(peak * LARGE_AMP_FRAC)
+    small = round(peak * SMALL_AMP_FRAC)
+    vec   = (peak * math.cos(angle), peak * math.sin(angle))
+    save_calibration(pid, handedness, [vec] * CALIBRATION_REPS, peak, large, small,
+                     REACH_CONE_AXIS_DEG)
+    return peak, large, small, angle
 
 
 # Standard button size and corner roundness.
@@ -1860,7 +1927,6 @@ def save_initialization(pid, age, sex, ratings, handedness,
     row[f"culture_{CULTURE_SELF_KEY}"]    = int(CULTURE_SELF_KEY in picked)
     row["culture_self_identify_text"]     = culture_text
     row[f"culture_{CULTURE_DECLINE_KEY}"] = int(CULTURE_DECLINE_KEY in picked)
-    row["culture_n_selected"]             = len(picked)
 
     for i, r in enumerate(ratings, 1):
         row[f"miq3_q{i:02d}"] = r
@@ -1887,6 +1953,8 @@ def save_calibration(pid, handedness, vectors, peak, large, small, angle_deg):
     row["angle_deg"]        = round(angle_deg, 2)
     row["large_amp_px"]     = large
     row["small_amp_px"]     = small
+    row["cross_x"]          = CROSS_POS[0]
+    row["cross_y"]          = CROSS_POS[1]
     _write_csv(_out_path("mo_calibration", pid, handedness, "calibration"), [row])
 
 
@@ -1920,22 +1988,20 @@ def save_tlx(pid, handedness, tlx_scores):
     _write_csv(_out_path("mo_questionnaire", pid, handedness, "tlx"), [row])
 
 
-# Saves the session plan: the condition order and each condition's trial order.
-def save_session(pid, handedness, task_order, trial_seqs):
+# Saves the session plan: the condition order and each condition's block sizes.
+def save_session(pid, handedness, task_order, order_index, block_seqs):
     row  = {
         "participant_id":   pid,
         "handedness":       handedness,
         "timestamp":        _stamp(),
-        "first_condition":  ">".join(FIXED_CONDITIONS),
         "condition_order":  ">".join(task_order),
-        "trials_per_condition": TRIALS_PER_CONDITION,
-        "trial_seconds":        TRIAL_SECONDS,
+        "order_index":      order_index,
     }
     for i, cond in enumerate(task_order, 1):
         row[f"cond_{i}"] = cond
     for cond in CONDITIONS:
-        row[f"{cond.lower()}_trial_seq"]  = ">".join(trial_seqs[cond])
-        row[f"{cond.lower()}_size_first"] = trial_seqs[cond][0]
+        row[f"{cond.lower()}_block_seq"]  = ">".join(size[0] for size in block_seqs[cond])
+        row[f"{cond.lower()}_size_first"] = block_seqs[cond][0]
     _write_csv(_out_path("mo_session", pid, handedness, "session"), [row])
 
 
@@ -1969,8 +2035,9 @@ class TouchLog:
 
 # Details of the current trial, filled in as the session runs and written into each row
 # of data: where it falls in the session, the target, and the marker times.
-BLOCK_CTX = {"cond_order_index": "", "condition_position": "",
-             "trial_index": "", "size_position": "", "ao_hand_model": ""}
+BLOCK_CTX = {"cond_order_index": "", "condition_position": "", "trial_index": "",
+             "block_index": "", "trial_in_block": "", "size_position": "",
+             "spike2_file": ""}
 
 TRIAL_CTX = {"target": None}
 
@@ -1983,7 +2050,7 @@ def set_trial_ctx(target=None):
 
 # Saves one row per trial, and every touch during it to a separate file.
 def save_task_block(pid, handedness, condition, block_label, size_label,
-                    reps, seconds, touch_log, lift=None, misses=None):
+                    reps, touch_log, lift=None, misses=None):
     row = {
         "participant_id": pid,
         "handedness":     handedness,
@@ -1994,29 +2061,25 @@ def save_task_block(pid, handedness, condition, block_label, size_label,
         "cond_order_index":   BLOCK_CTX["cond_order_index"],
         "condition_position": BLOCK_CTX["condition_position"],
         "trial_index":        BLOCK_CTX["trial_index"],
+        "block_index":        BLOCK_CTX["block_index"],
+        "trial_in_block":     BLOCK_CTX["trial_in_block"],
         "size_position":      BLOCK_CTX["size_position"],
-        "ao_hand_model":      BLOCK_CTX["ao_hand_model"],
-        "duration_s":     seconds if seconds is not None else "",
+        "spike2_file":        BLOCK_CTX["spike2_file"],
         "reps":           reps if reps is not None else "",
-        "metronome_bpm":  METRONOME_BPM,
-        "n_beats":        TRIAL_BEATS,
-        "cross_x":        CROSS_POS[0],
-        "cross_y":        CROSS_POS[1],
     }
     row.update(lift.columns() if lift is not None
                else {k: "" for k in LiftCounter.FIELDS})
     row["n_missed_target_touches"] = "" if misses is None else misses
     row["imagery_bias"] = ""
     row["ao_imagery"]   = ""
-    row["trig_a_ms"] = "" if TRIAL_TRIG["a"] is None else TRIAL_TRIG["a"]
-    row["trig_b_ms"] = "" if TRIAL_TRIG["b"] is None else TRIAL_TRIG["b"]
-    row["trig_c_ms"] = "" if TRIAL_TRIG["c"] is None else TRIAL_TRIG["c"]
     row["trig_ok"]   = int(all(TRIAL_TRIG[k] is not None for k in ("a", "b", "c")))
 
     _write_csv(_out_path("mo_task", pid, handedness, "task"), [row], append=True)
 
     trace = [{"participant_id": pid, "handedness": handedness, "condition": condition,
-              "block_label": block_label, "size_label": size_label, **r}
+              "block_label": block_label, "size_label": size_label,
+              "trial_index": BLOCK_CTX["trial_index"],
+              "block_index": BLOCK_CTX["block_index"], **r}
              for r in touch_log.rows]
     if trace:
         _write_csv(_out_path("mo_task", pid, handedness, "touches"), trace, append=True)
@@ -2029,6 +2092,8 @@ def save_reps(pid, handedness, condition, size_label, rep_rows):
     rows = [{"participant_id": pid, "handedness": handedness,
              "condition": condition, "size_label": size_label,
              "trial_index": BLOCK_CTX["trial_index"],
+             "block_index": BLOCK_CTX["block_index"],
+             "trial_in_block": BLOCK_CTX["trial_in_block"],
              "condition_position": BLOCK_CTX["condition_position"], **r}
             for r in rep_rows]
     _write_csv(_out_path("mo_task", pid, handedness, "reps"), rows, append=True)
@@ -2115,6 +2180,7 @@ def validate_age(text):
 # screen is redrawn many times a second while it waits.
 #
 # This one shows a screen until Continue is pressed.
+@skippable()
 def wait_for_continue(draw, label="Continue"):
     while True:
         screen.fill(BACKGROUND)
@@ -2176,6 +2242,7 @@ def screen_welcome():
 
 
 # Which hand? Returns 'lh' or 'rh'.
+@skippable("rh")
 def screen_handedness():
     return screen_two_buttons("Participant Hand",
                               ("L", "Left",  pygame.K_l, "lh"),
@@ -2184,6 +2251,7 @@ def screen_handedness():
 
 # A typing screen with an on-screen number pad or keyboard. The answer is checked before it
 # is accepted. Cancel (if shown) returns nothing.
+@skippable(_skipped_text_input)
 def screen_text_input(title, hint, validator, max_len=None, keys="number",
                       start_text="", allow_cancel=False):
     text  = start_text
@@ -2247,6 +2315,7 @@ def screen_text_input(title, hint, validator, max_len=None, keys="number",
 
 
 # Sex: M or F.
+@skippable("")
 def screen_sex():
     return screen_two_buttons("Participant Sex",
                               ("M", "Male",   pygame.K_m, "M"),
@@ -2298,6 +2367,7 @@ def draw_check(rect, on, multi):
 # A list of options to tick. It adds a 'describe it yourself' option, which opens the
 # keyboard, and 'prefer not to answer', which clears the others. Returns what was picked
 # and any typed answer.
+@skippable(_skipped_checklist)
 def screen_checklist(title, question, options, multi, free_key, free_label,
                      free_title, decline_key, decline_label):
     rows = list(options)
@@ -2472,6 +2542,7 @@ def run_rating_items(n_items, values, draw_item, anchors=None, row_clear=60):
 
 
 # The 12 MIQ-3 items: starting position, movement and what to imagine, then a 1 to 7 rating.
+@skippable(lambda *a, **k: [4] * len(ITEMS))
 def screen_miq3():
     def draw_item(q_idx):
         item_num, label, img_type, move_key = ITEMS[q_idx]
@@ -2512,6 +2583,7 @@ def screen_done(pid):
 
 # Shows instructions as bullet points (or one paragraph), as large as will fit. If side is
 # given, the button moves to that side and only the button accepts touches.
+@skippable()
 def screen_instructions(text, button_label="Continue", title="", side=None):
     max_w  = min(W - s(160), s(1000))
     left   = (W - max_w) // 2
@@ -2568,6 +2640,7 @@ def screen_instructions(text, button_label="Continue", title="", side=None):
 
 
 # Plays the metronome with a pulsing circle until the participant continues.
+@skippable()
 def screen_metronome_familiarization():
     start_metronome_loop()
     t0     = pygame.time.get_ticks()
@@ -2609,6 +2682,7 @@ def screen_metronome_familiarization():
 # touches down, and comes back to the X. It moves through these stages:
 # wait_x -> on_x -> in_flight -> at_max -> returning.
 # The average reach sets the targets: Large is 80% of it and Small is 30%.
+@skippable(_skipped_calibration)
 def run_calibration(pid, handedness):
     sub          = "wait_x"
     vectors      = []
@@ -2718,8 +2792,8 @@ def run_calibration(pid, handedness):
                     avg_peak  = math.hypot(avg_dx, avg_dy)
                     angle     = math.atan2(avg_dy, avg_dx)
                     peak_dist = round(avg_peak)
-                    large_amp = round(avg_peak * 0.80)
-                    small_amp = round(avg_peak * 0.30)
+                    large_amp = round(avg_peak * LARGE_AMP_FRAC)
+                    small_amp = round(avg_peak * SMALL_AMP_FRAC)
                     save_calibration(pid, handedness, vectors, peak_dist, large_amp, small_amp,
                                       math.degrees(angle))
                     stop_metronome()
@@ -2733,6 +2807,7 @@ def run_calibration(pid, handedness):
 
 
 # Shows the calibration result and both targets, with Redo Calibration or Begin Task.
+@skippable("continue")
 def screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness):
     large_pos, large_actual, large_clamped = target_geometry(large_amp, angle)
     small_pos, small_actual, small_clamped = target_geometry(small_amp, angle)
@@ -2777,6 +2852,7 @@ def screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness):
 
 # One KMI or VMI trial. The finger rests on the X for 15 seconds while the participant
 # imagines the movement. Any lifts from the X are counted.
+@skippable()
 def run_covert_timed_block(pid, handedness, condition, amp, angle, task_type,
                            size_label, seconds=TRIAL_SECONDS):
     target  = target_position(amp, angle)
@@ -2809,7 +2885,7 @@ def run_covert_timed_block(pid, handedness, condition, amp, angle, task_type,
             play_bell()
             stop_metronome()
             save_task_block(pid, handedness, condition, task_type, size_label,
-                            None, seconds, tlog, lift=lift)
+                            None, tlog, lift=lift)
             set_trial_ctx()
             disarm_touch()
             return
@@ -2918,6 +2994,7 @@ def start_ao_loading(handedness):
 
 
 # Shows 'Loading the videos...' if the checking has not finished yet.
+@skippable()
 def wait_for_ao_loading():
     while _ao_loader is not None and _ao_loader.is_alive():
         screen.fill(BACKGROUND)
@@ -2938,6 +3015,7 @@ def ao_box(path, cap):
 
 # One AO trial. The finger rests on the X while a hand video plays for 15 seconds. If the
 # video file is missing, the experimenter can skip the trial.
+@skippable()
 def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS):
     video_path = AO_VIDEO_PATHS[(model, handedness, size_label)]
     missing    = not os.path.exists(video_path)
@@ -2996,7 +3074,7 @@ def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS)
                 check_quit(event)
                 if is_button_activated(event, btn):
                     save_task_block(pid, handedness, "AO", "Action Observation", size_label,
-                                    None, None, tlog)
+                                    None, tlog)
                     disarm_touch()
                     return
 
@@ -3040,7 +3118,7 @@ def run_ao_block(pid, handedness, size_label, amp, model, seconds=TRIAL_SECONDS)
     play_bell()
     stop_metronome()
     save_task_block(pid, handedness, "AO", "Action Observation", size_label,
-                    None, seconds, tlog, lift=lift)
+                    None, tlog, lift=lift)
     set_trial_ctx()
     disarm_touch()
 
@@ -3061,6 +3139,7 @@ def screen_maas_intro():
     wait_for_continue(draw, "Begin")
 
 
+@skippable(lambda *a, **k: [3] * len(MAAS_ITEMS))
 def screen_maas():
     n_items = len(MAAS_ITEMS)
 
@@ -3125,6 +3204,7 @@ class SliderDrag:
 
 
 # The six NASA-TLX sliders, 0 to 100 in steps of 5, all starting at 50.
+@skippable(lambda *a, **k: [50] * len(NASA_TLX_SCALES))
 def screen_nasa_tlx():
     pygame.event.set_allowed(pygame.FINGERMOTION)
     values   = [50] * 6
@@ -3176,6 +3256,7 @@ def screen_nasa_tlx():
 
 
 # One slider from -50 (only feeling) to +50 (only seeing), starting at 0.
+@skippable(0)
 def screen_imagery_slider(condition_label):
     pygame.event.set_allowed(pygame.FINGERMOTION)
     value = 0
@@ -3226,6 +3307,7 @@ def screen_imagery_slider(condition_label):
 
 
 # The AO yes/no imagery question, with the buttons on the participant's side.
+@skippable("")
 def screen_ao_imagery_check(handedness):
     cx = W // 4 if button_side(handedness) == "left" else W - W // 4
     return screen_two_buttons("Action Observation",
@@ -3269,6 +3351,7 @@ def run_nasa_tlx(pid, handedness):
 # every beat. It moves through these stages: on_x -> in_flight1 -> at_circle -> returning.
 # Each completed movement is saved with its timing and accuracy, and touches that miss
 # the circle are counted.
+@skippable()
 def run_task_block(pid, handedness, condition, amp, angle, block_label, size_label,
                    seconds=TRIAL_SECONDS):
     target       = target_position(amp, angle)
@@ -3331,7 +3414,7 @@ def run_task_block(pid, handedness, condition, amp, angle, block_label, size_lab
             play_bell()
             stop_metronome()
             save_task_block(pid, handedness, condition, block_label, size_label,
-                            reps, seconds, tlog, misses=misses)
+                            reps, tlog, misses=misses)
             save_reps(pid, handedness, condition, size_label, rep_rows)
             set_trial_ctx()
             disarm_touch()
@@ -3399,20 +3482,36 @@ CONDITION_META = {
 }
 
 
-# Pause screen after each trial. It warns if the marker link has been lost.
-def screen_trial_complete(handedness, label, trial_index, n_trials):
-    last = trial_index >= n_trials
+# Pause screen after each trial. After a block's last trial it becomes the Block Complete
+# screen, a rest for the participant. It warns if the marker link has been lost.
+@skippable()
+def screen_trial_complete(handedness, label, trial_in_block, n_trials,
+                          block_index=1, n_blocks=1):
+    block_done = trial_in_block >= n_trials
+    last_block = block_index >= n_blocks
+    if not block_done:
+        title = "Trial Complete"
+        note  = "Lift your hand off the screen, then continue when you are ready."
+    elif n_blocks == 1:
+        title = "Block Complete"
+        note  = "Lift your hand off the screen. You may rest."
+    elif last_block:
+        title = "Block Complete"
+        note  = "Lift your hand off the screen. A few short questions follow."
+    else:
+        title = "Block Complete"
+        note  = ("Lift your hand off the screen and take a short rest. "
+                 "Continue when you are ready.")
+    if n_blocks > 1:
+        where = f"Block {block_index} of {n_blocks}   ·   Trial {trial_in_block} of {n_trials}"
+    else:
+        where = f"Trial {trial_in_block} of {n_trials}"
     while True:
         screen.fill(BACKGROUND)
-        text_c("Block Complete" if last else "Trial Complete",
-               font_title, OK, W // 2, H // 2 - s(100))
+        text_c(title, font_title, OK, W // 2, H // 2 - s(100))
         text_c(label, font_body, TEXT, W // 2, H // 2 - s(30))
-        text_c(f"Trial {trial_index} of {n_trials}",
-               font_body, TEXT_SECONDARY, W // 2, H // 2 + s(30))
-        text_c("Lift your hand off the screen. You may rest."
-               if last else
-               "Lift your hand off the screen, then continue when you are ready.",
-               font_small, TEXT_SECONDARY, W // 2, H // 2 + s(90))
+        text_c(where, font_body, TEXT_SECONDARY, W // 2, H // 2 + s(30))
+        text_c(note, font_small, TEXT_SECONDARY, W // 2, H // 2 + s(90))
         if TRIG.failed:
             text_c("Trigger link lost — tell the experimenter.",
                    font_small, ERROR, W // 2, H // 2 + s(140))
@@ -3427,14 +3526,15 @@ def screen_trial_complete(handedness, label, trial_index, n_trials):
                 return
 
 
-# Runs one condition: its instructions, its eight trials, then its questionnaires.
-# Where each trial falls in the session is noted for the data files.
+# Runs one condition: its instructions, its four blocks of eight trials (one target size
+# per block), then its questionnaires. Where each trial falls in the session is noted
+# for the data files.
 def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
-                  trial_seq, cond_position, order_index):
+                  block_seq, cond_position, order_index):
     side               = button_side(handedness)
     instruction, label = CONDITION_META[condition]
     amps               = {"Small": small_amp, "Large": large_amp}
-    n_trials           = len(trial_seq)
+    n_blocks           = len(block_seq)
 
     if condition == "AO":
         start_ao_loading(handedness)
@@ -3442,31 +3542,37 @@ def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
     ao_models = None
     if condition == "AO":
         wait_for_ao_loading()
-        ao_models = get_ao_models(pid, trial_seq)
+        ao_models = get_ao_models(pid)
 
+    BLOCK_CTX["cond_order_index"]   = order_index
+    BLOCK_CTX["condition_position"] = cond_position
     seen = {size: 0 for size in SIZES}
-    for i, size in enumerate(trial_seq, 1):
-        seen[size] += 1
-        TRIAL_TRIG["a"] = TRIAL_TRIG["b"] = TRIAL_TRIG["c"] = None
-        BLOCK_CTX["cond_order_index"]   = order_index
-        BLOCK_CTX["condition_position"] = cond_position
-        BLOCK_CTX["trial_index"]        = i
-        BLOCK_CTX["size_position"]      = seen[size]
-        BLOCK_CTX["ao_hand_model"]      = ao_models[i - 1] if ao_models else ""
+    i    = 0
+    for b, size in enumerate(block_seq, 1):
+        amp         = amps[size]
+        BLOCK_CTX["block_index"] = b
+        BLOCK_CTX["spike2_file"] = spike2_name(pid, condition, b, size)
+        for t in range(1, TRIALS_PER_BLOCK + 1):
+            i += 1
+            seen[size] += 1
+            TRIAL_TRIG["a"] = TRIAL_TRIG["b"] = TRIAL_TRIG["c"] = None
+            BLOCK_CTX["trial_index"]    = i
+            BLOCK_CTX["trial_in_block"] = t
+            BLOCK_CTX["size_position"]  = seen[size]
 
-        amp = amps[size]
-        if condition == "ME":
-            run_task_block(pid, handedness, condition, amp, angle, label, size)
-        elif condition in ("KMI", "VMI"):
-            run_covert_timed_block(pid, handedness, condition, amp, angle, label, size)
-        elif condition == "AO":
-            run_ao_block(pid, handedness, size, amp, ao_models[i - 1])
+            if condition == "ME":
+                run_task_block(pid, handedness, condition, amp, angle, label, size)
+            elif condition in ("KMI", "VMI"):
+                run_covert_timed_block(pid, handedness, condition, amp, angle, label, size)
+            elif condition == "AO":
+                run_ao_block(pid, handedness, size, amp, ao_models[b - 1][t - 1])
 
-        screen_trial_complete(handedness, label, i, n_trials)
+            screen_trial_complete(handedness, label, t, TRIALS_PER_BLOCK,
+                                  b, n_blocks)
 
-    BLOCK_CTX["trial_index"] = ""
-    BLOCK_CTX["size_position"] = ""
-    BLOCK_CTX["ao_hand_model"] = ""
+    for key in ("trial_index", "block_index", "trial_in_block", "size_position",
+                "spike2_file"):
+        BLOCK_CTX[key] = ""
     if condition in ("KMI", "VMI"):
         run_imagery_slider(pid, handedness, condition)
     elif condition == "AO":
@@ -3476,6 +3582,7 @@ def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
 
 # First screen: connect to the marker box. Test Pulse sends a marker to check in Spike2.
 # If the box is not found, the USB ports are listed to choose from.
+@skippable()
 def screen_trigger_setup():
     ok, reason = TRIG.open(bbtk_trigger.DEFAULT_PORT)
     ports = TRIG.list_ports() if not ok else []
@@ -3484,7 +3591,8 @@ def screen_trigger_setup():
     PORT_BTN_W, PORT_BTN_H, PORT_GAP = s(400), s(44), s(10)
     instruction = ("Start Spike2 sampling now with Motor_Overflow_Config_v3. "
                    "Tap Test Pulse and confirm one marker appears on the Trig channel "
-                   "for each tap. Keep Spike2 sampling until the Task Complete screen.")
+                   "for each tap. Each block is its own Spike2 file: at every Block "
+                   "Complete screen, stop, save it as {pid}_mo_{COND}_{S|L}_b{n}, and start a new file.")
     while True:
         screen.fill(BACKGROUND)
         text_c("Trigger Setup", font_title, TEXT, W // 2, s(90))
@@ -3581,10 +3689,10 @@ def main():
 
     pid_raw    = screen_text_input("Enter Participant ID", "(001 – 999)", validate_pid, max_len=3)
     pid        = f"{int(pid_raw):03d}"
-    # Work out this participant's condition order and trial order, and save them.
+    # Work out this participant's condition order and block sizes, and save them.
     task_order, order_index = get_task_order(pid)
-    trial_seqs = get_trial_sequences(pid)
-    save_session(pid, handedness, task_order, trial_seqs)
+    block_seqs = get_block_sequences(pid, task_order)
+    save_session(pid, handedness, task_order, order_index, block_seqs)
 
     screen_welcome()
 
@@ -3613,7 +3721,7 @@ def main():
     # The four conditions.
     for cond_position, condition in enumerate(task_order, 1):
         run_condition(condition, pid, handedness, large_amp, small_amp, angle,
-                      trial_seqs[condition], cond_position, order_index)
+                      block_seqs[condition], cond_position, order_index)
 
     run_nasa_tlx(pid, handedness)
 
