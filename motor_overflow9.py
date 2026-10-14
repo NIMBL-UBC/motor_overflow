@@ -228,6 +228,7 @@ TEXT_SECONDARY = (150, 150, 155)
 ACCENT         = (216, 138,  23)
 ERROR          = (220,  50,  50)
 OK             = ( 60, 200, 100)
+DISABLED       = ( 70,  70,  75)
 ZONE_FILL      = ( 80, 140, 220,  62)
 ZONE_EDGE      = ( 80, 140, 220, 150)
 
@@ -273,6 +274,13 @@ BLOCKS_PER_CONDITION = 4
 TRIALS_PER_CONDITION = TRIALS_PER_BLOCK * BLOCKS_PER_CONDITION
 TRIAL_SECONDS        = 15
 SHOW_COUNTDOWN       = False
+
+# The resting baseline after calibration: 30 seconds completely still, with a marker 7.5 s
+# in and another 22.5 s in, so the 15 s between them is the baseline. Then the rest
+# between blocks, during which Continue is locked.
+BASELINE_SECONDS   = 30
+BASELINE_MARKS_S   = (7.5, 22.5)
+BLOCK_REST_SECONDS = 15
 
 # Metronome speed: 40 beats per minute, one click every 1.5 seconds, 10 per trial.
 METRONOME_BPM  = 40
@@ -547,6 +555,14 @@ def _calibration_instruction(direction):
 
 CALIBRATION_INSTRUCTION_RH = _calibration_instruction("LEFT")
 CALIBRATION_INSTRUCTION_LH = _calibration_instruction("RIGHT")
+
+# The resting baseline, read before the experimenter taps Begin.
+BASELINE_INSTRUCTION = (
+    "Next we will record your muscles at rest.",
+    "Rest *both hands* off to the side, completely relaxed.",
+    "Stay *completely still and at rest* until the experimenter tells you otherwise.",
+    "The experimenter will start this part. *Please do not press Begin yourself.*",
+)
 
 # Instructions for each condition. KMI and VMI share the same wording apart from what
 # to focus on.
@@ -1259,8 +1275,9 @@ BUTTON_H      = s(60)
 BUTTON_RADIUS = s(14)
 
 
-# Draws a button (centred, or at the left or right) and returns where it is.
-def draw_continue_button(label="Continue", y=None, side=None):
+# Draws a button (centred, or at the left or right) and returns where it is. A disabled
+# button is drawn grey.
+def draw_continue_button(label="Continue", y=None, side=None, enabled=True):
     if y is None:
         y = H - s(90)
     if side == "right":
@@ -1270,8 +1287,10 @@ def draw_continue_button(label="Continue", y=None, side=None):
     else:
         bx = W // 2 - BUTTON_W // 2
     rect = pygame.Rect(bx, y, BUTTON_W, BUTTON_H)
-    pygame.draw.rect(screen, ACCENT, rect, border_radius=BUTTON_RADIUS)
-    text_c(label, font_bold, BACKGROUND, rect.centerx, rect.centery)
+    pygame.draw.rect(screen, ACCENT if enabled else DISABLED, rect,
+                     border_radius=BUTTON_RADIUS)
+    text_c(label, font_bold, BACKGROUND if enabled else TEXT_SECONDARY,
+           rect.centerx, rect.centery)
     return rect
 
 
@@ -2850,6 +2869,49 @@ def screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness):
                 disarm_touch()
                 return "continue"
 
+
+# The resting baseline, recorded in its own Spike2 file. The rest screen waits for the
+# experimenter to tap Begin. The screen then stays as it is, minus the experimenter
+# prompt, with Begin grey and locked, for BASELINE_SECONDS (no timer shown). A marker is sent at each time in
+# BASELINE_MARKS_S. Then the Baseline Complete screen.
+@skippable()
+def run_baseline_rest():
+    t0      = None
+    pending = sorted(round(m * 1000) for m in BASELINE_MARKS_S)
+    while True:
+        if t0 is not None:
+            # A marker due before the next frame is waited for to the millisecond, not
+            # left to the frame timer.
+            if pending and pending[0] - (pygame.time.get_ticks() - t0) <= 1000 / FPS:
+                while pygame.time.get_ticks() - t0 < pending[0]:
+                    pass
+                TRIG.pulse("rest")
+                pending.pop(0)
+            if pygame.time.get_ticks() - t0 >= BASELINE_SECONDS * 1000 and not pending:
+                break
+        screen.fill(BACKGROUND)
+        text_c("Resting Baseline", font_title, TEXT, W // 2, H // 2 - s(90))
+        text_c("Rest both hands off to the side, completely relaxed.", font_body,
+               TEXT_SECONDARY, W // 2, H // 2 - s(20))
+        if t0 is None:
+            text_c("Experimenter: tap Begin.", font_small, TEXT_SECONDARY,
+                   W // 2, H // 2 + s(40))
+        btn = draw_continue_button("Begin", enabled=t0 is None)
+        flip()
+        clock.tick(FPS)
+        disarm_touch()
+        for event in pump():
+            check_quit(event)
+            if t0 is None and is_button_activated(event, btn):
+                t0 = pygame.time.get_ticks()
+
+    def draw():
+        text_c("Baseline Complete", font_title, OK, W // 2, H // 2 - s(30))
+        if TRIG.failed:
+            text_c("Trigger link lost — tell the experimenter.", font_small, ERROR,
+                   W // 2, H // 2 + s(40))
+    wait_for_continue(draw)
+
 # One KMI or VMI trial. The finger rests on the X for 15 seconds while the participant
 # imagines the movement. Any lifts from the X are counted.
 @skippable()
@@ -3483,12 +3545,15 @@ CONDITION_META = {
 
 
 # Pause screen after each trial. After a block's last trial it becomes the Block Complete
-# screen, a rest for the participant. It warns if the marker link has been lost.
+# screen, a rest for the participant. Between blocks of a condition, Continue stays grey
+# and locked for BLOCK_REST_SECONDS, counting down the seconds left, then turns orange.
+# It warns if the marker link has been lost.
 @skippable()
 def screen_trial_complete(handedness, label, trial_in_block, n_trials,
                           block_index=1, n_blocks=1):
     block_done = trial_in_block >= n_trials
     last_block = block_index >= n_blocks
+    unlock_at  = 0
     if not block_done:
         title = "Trial Complete"
         note  = "Lift your hand off the screen, then continue when you are ready."
@@ -3499,14 +3564,19 @@ def screen_trial_complete(handedness, label, trial_in_block, n_trials,
         title = "Block Complete"
         note  = "Lift your hand off the screen. A few short questions follow."
     else:
-        title = "Block Complete"
-        note  = ("Lift your hand off the screen and take a short rest. "
-                 "Continue when you are ready.")
+        title     = "Block Complete"
+        note      = (f"Lift your hand off the screen and take the next "
+                     f"{BLOCK_REST_SECONDS} seconds to rest.")
+        unlock_at = pygame.time.get_ticks() + BLOCK_REST_SECONDS * 1000
     if n_blocks > 1:
         where = f"Block {block_index} of {n_blocks}   ·   Trial {trial_in_block} of {n_trials}"
     else:
         where = f"Trial {trial_in_block} of {n_trials}"
     while True:
+        left_ms  = unlock_at - pygame.time.get_ticks()
+        unlocked = left_ms <= 0
+        if unlocked and unlock_at:
+            note = "Continue when you are ready."
         screen.fill(BACKGROUND)
         text_c(title, font_title, OK, W // 2, H // 2 - s(100))
         text_c(label, font_body, TEXT, W // 2, H // 2 - s(30))
@@ -3515,13 +3585,15 @@ def screen_trial_complete(handedness, label, trial_in_block, n_trials,
         if TRIG.failed:
             text_c("Trigger link lost — tell the experimenter.",
                    font_small, ERROR, W // 2, H // 2 + s(140))
-        btn = draw_continue_button(side=button_side(handedness))
+        btn_label = "Continue" if unlocked else f"Rest  {math.ceil(left_ms / 1000)} s"
+        btn = draw_continue_button(btn_label, side=button_side(handedness),
+                                   enabled=unlocked)
         flip()
         clock.tick(FPS)
         arm_touch(touch_rect(btn))
         for event in pump():
             check_quit(event)
-            if is_button_activated(event, btn):
+            if unlocked and is_button_activated(event, btn):
                 disarm_touch()
                 return
 
@@ -3591,7 +3663,9 @@ def screen_trigger_setup():
     PORT_BTN_W, PORT_BTN_H, PORT_GAP = s(400), s(44), s(10)
     instruction = ("Start Spike2 sampling now with Motor_Overflow_Config_v3. "
                    "Tap Test Pulse and confirm one marker appears on the Trig channel "
-                   "for each tap. Each block is its own Spike2 file: at every Block "
+                   "for each tap. This first file runs through calibration and the "
+                   "resting baseline: at Baseline Complete, stop, save it as {pid}_mo_REST, "
+                   "and start a new file. Each block is its own Spike2 file: at every Block "
                    "Complete screen, stop, save it as {pid}_mo_{COND}_{S|L}_b{n}, and start a new file.")
     while True:
         screen.fill(BACKGROUND)
@@ -3717,6 +3791,11 @@ def main():
         peak_dist, large_amp, small_amp, angle = run_calibration(pid, handedness)
         if screen_calib_results(peak_dist, large_amp, small_amp, angle, handedness) != "redo":
             break
+
+    # The resting baseline: its instructions, then the rest screen, where the experimenter
+    # (not the participant) taps Begin.
+    screen_instructions(BASELINE_INSTRUCTION, title="Resting Baseline")
+    run_baseline_rest()
 
     # The four conditions.
     for cond_position, condition in enumerate(task_order, 1):

@@ -24,7 +24,10 @@ Each condition (ME, AO, KMI, VMI) is four blocks of 8 trials, one target
 size per block (Small, Large, Small, Large or the reverse, counterbalanced).
 Each block is recorded to **its own Spike2 file**: 8 trials × 3 markers =
 **24 markers per file**, 16 files per session, named
-`{pid}_mo_{COND}_{S|L}_b{n}.smrx`.
+`{pid}_mo_{COND}_{S|L}_b{n}.smrx`. Before them comes one more file,
+`{pid}_mo_REST.smrx`, holding calibration and a 30 s resting baseline with
+two markers 15 s apart (7.5 s and 22.5 s into the rest), which mark the 15 s
+baseline.
 
 How a marker travels: BBTK output line 8 is wired to the 1401's Data
 Available input (Digital Input pin 23). The line idles up; the Python sends
@@ -210,8 +213,17 @@ header.
    per tap, reading `AA`. The screen counts them.
 7. Tap **Continue** and hand over the tablet. The rest of the session is
    unchanged.
-8. **One Spike2 file per block, 16 per session.** Sampling runs through
-   calibration and ME block 1. At every **Block Complete** screen (Block n
+8. **Resting baseline, its own file.** Sampling runs through calibration
+   into the **Resting Baseline** instructions; tap Continue. On the rest
+   screen that follows, have the participant rest both hands off to the
+   side, then **you** tap **Begin** (the participant must not). Begin turns
+   grey and the screen otherwise stays the same for 30 s (no timer), while
+   the task sends two markers 15 s apart. At **Baseline Complete**: Sample →
+   Stop, **File → Save As** → `{pid}_mo_REST.smrx`, and start a new file
+   sampling before the participant taps **Continue**; the ME instructions
+   follow.
+9. **One Spike2 file per block, 16 per session.** Sampling runs through
+   ME block 1. At every **Block Complete** screen (Block n
    of 4 · Trial 8 of 8): Sample → Stop, **File → Save As** →
    `{pid}_mo_{COND}_{S|L}_b{n}.smrx`, e.g. `012_mo_ME_S_b1.smrx` (condition,
    S or L size, block number). The block sizes are in that participant's
@@ -219,17 +231,20 @@ header.
    before the session. Then start
    a new file sampling **before** the participant taps Continue: there is
    no intro screen, so the next block's first trial (or the next
-   condition's instructions) follows straight away. `012_rh_mo_ME_S_b1.smrx`
+   condition's instructions) follows straight away. Between blocks of a
+   condition, Continue stays grey and cannot be tapped for 15 s (the
+   participant's rest; the button counts down the seconds left), then
+   turns orange; save and restart the file during that time. `012_rh_mo_ME_S_b1.smrx`
    (with the hand) is read the same way. Do not press keys in Spike2.
-9. After a condition's 4th block, the questionnaires follow; the new file
+10. After a condition's 4th block, the questionnaires follow; the new file
    can sample through them (nothing is marked there). After the very last
    block, stop and save that file.
-10. Close the task; it puts the line back up and releases the port.
+11. Close the task; it puts the line back up and releases the port.
 
-Expected in each file: 24 task markers in groups of three (2.2 s, then 15 s
-apart), and none during Trial Complete screens or questionnaires. The first
-file also holds your test pulses, and there may be one marker from the moment
-the task opened the port; the script leaves them unmatched.
+Expected in each block file: 24 task markers in groups of three (2.2 s, then
+15 s apart), and none during Trial Complete screens or questionnaires. The
+REST file holds your test pulses, perhaps one marker from the moment the task
+opened the port, and, last, the two baseline markers 15 s apart.
 
 If a Trial Complete screen shows **Trigger link lost — tell the experimenter**,
 note the trial and let the session finish; see §9.
@@ -242,6 +257,8 @@ whole session with a new Spike2 file.
 ## 8. Part F — After recording: labelling
 
 1. Put the block `.smrx` files to process in one folder (16 per session).
+   Leave `{pid}_mo_REST.smrx` out: it has no trials, so the script would
+   report it as failed.
 2. Spike2: File → Open → `mo_label_export.s2s` → **Script → Run**.
 3. First question: Yes = one file, No = whole folder.
 4. When the summary appears, read the Log window and each

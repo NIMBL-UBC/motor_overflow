@@ -4,7 +4,7 @@
 
 | File | What it does |
 | --- | --- |
-| `motor_overflow9.py` | The study itself. Trigger Setup screen, handedness, participant ID, MIQ-3, metronome familiarisation, reach calibration, the four conditions (ME, then AO/KMI/VMI in a counterbalanced order), each four blocks of 8 trials with one target size per block (S L S L or L S L S, counterbalanced), MAAS after every condition, NASA-TLX, demographics. Sends the three Spike2 markers per trial (a, b, c) and writes every CSV. |
+| `motor_overflow9.py` | The study itself. Trigger Setup screen, handedness, participant ID, MIQ-3, metronome familiarisation, reach calibration, a 30 s resting baseline (two markers 15 s apart), the four conditions (ME, then AO/KMI/VMI in a counterbalanced order), each four blocks of 8 trials with one target size per block (S L S L or L S L S, counterbalanced), MAAS after every condition, NASA-TLX, demographics. Sends the three Spike2 markers per trial (a, b, c) and writes every CSV. |
 | `bbtk_trigger.py` | The link to the Black Box Toolkit USB TTL module: opens the COM port, sends each marker (line 8, the strobe, up then down: `80` `00`), puts it back up a frame later, and records a failure instead of crashing. Also the decoder that groups marker times into a/b/c trial triplets by their spacing. Run directly to list ports or decode a file. |
 | `trigger_test.py` | Bench tool. Sends markers to Spike2 without running the task: 5 test markers, fake trials, or one fake 8-trial block. |
 | `spike2\Motor_Overflow_Config_v3.s2cx` | Spike2 sampling configuration: the two EMG channels plus channel 32 `Trig`, a Digital Marker channel read from the rear Digital Input connector. |
@@ -64,11 +64,14 @@ cd %USERPROFILE%\Desktop\motor_overflow
 
 Once per PC: Edit → Preferences → Sampling → tick **Use rear connector for
 events**. Then every session: load `spike2\Motor_Overflow_Config_v3.s2cx`,
-Sample → Start, and at each **Block Complete** screen stop and save the file
+Sample → Start. At **Baseline Complete** (after the resting baseline, which you
+start by tapping Begin) stop and save the file as `{pid}_mo_REST.smrx` and
+start a new one. At each **Block Complete** screen stop and save the file
 as `{pid}_mo_{COND}_{S|L}_b{n}.smrx` (e.g. `012_mo_AO_L_b2.smrx`; the block
 sizes are in that participant's `mo_session` CSV), then start a new one
-before the participant taps Continue. 16 files per session. After the session run `spike2\mo_label_export.s2s`
-(Script → Run). Nothing is installed on this machine for the trigger; the
+before the participant taps Continue (it stays locked for 15 s between
+blocks, counting down). 17 files per session. After the session run `spike2\mo_label_export.s2s`
+(Script → Run) on the 16 block files. Nothing is installed on this machine for the trigger; the
 BBTK's driver lives on the Py Computer.
 
 ## Cable
