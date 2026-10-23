@@ -22,3 +22,6 @@ EMG/
 *.mat
 PythonSpike2_Cables/
 
+
+# EMG analysis script: kept local, not shared.
+mo_getDATA_EMG.m

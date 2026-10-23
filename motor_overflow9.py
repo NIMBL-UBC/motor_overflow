@@ -2055,8 +2055,8 @@ class TouchLog:
 # Details of the current trial, filled in as the session runs and written into each row
 # of data: where it falls in the session, the target, and the marker times.
 BLOCK_CTX = {"cond_order_index": "", "condition_position": "", "trial_index": "",
-             "block_index": "", "trial_in_block": "", "size_position": "",
-             "spike2_file": ""}
+             "block_index": "", "block_attempt": "", "trial_in_block": "",
+             "size_position": "", "spike2_file": ""}
 
 TRIAL_CTX = {"target": None}
 
@@ -2081,6 +2081,7 @@ def save_task_block(pid, handedness, condition, block_label, size_label,
         "condition_position": BLOCK_CTX["condition_position"],
         "trial_index":        BLOCK_CTX["trial_index"],
         "block_index":        BLOCK_CTX["block_index"],
+        "block_attempt":      BLOCK_CTX["block_attempt"],
         "trial_in_block":     BLOCK_CTX["trial_in_block"],
         "size_position":      BLOCK_CTX["size_position"],
         "spike2_file":        BLOCK_CTX["spike2_file"],
@@ -2092,13 +2093,15 @@ def save_task_block(pid, handedness, condition, block_label, size_label,
     row["imagery_bias"] = ""
     row["ao_imagery"]   = ""
     row["trig_ok"]   = int(all(TRIAL_TRIG[k] is not None for k in ("a", "b", "c")))
+    row["discarded"] = 0
 
     _write_csv(_out_path("mo_task", pid, handedness, "task"), [row], append=True)
 
     trace = [{"participant_id": pid, "handedness": handedness, "condition": condition,
               "block_label": block_label, "size_label": size_label,
               "trial_index": BLOCK_CTX["trial_index"],
-              "block_index": BLOCK_CTX["block_index"], **r}
+              "block_index": BLOCK_CTX["block_index"],
+              "block_attempt": BLOCK_CTX["block_attempt"], **r, "discarded": 0}
              for r in touch_log.rows]
     if trace:
         _write_csv(_out_path("mo_task", pid, handedness, "touches"), trace, append=True)
@@ -2112,16 +2115,18 @@ def save_reps(pid, handedness, condition, size_label, rep_rows):
              "condition": condition, "size_label": size_label,
              "trial_index": BLOCK_CTX["trial_index"],
              "block_index": BLOCK_CTX["block_index"],
+             "block_attempt": BLOCK_CTX["block_attempt"],
              "trial_in_block": BLOCK_CTX["trial_in_block"],
-             "condition_position": BLOCK_CTX["condition_position"], **r}
+             "condition_position": BLOCK_CTX["condition_position"], **r,
+             "discarded": 0}
             for r in rep_rows]
     _write_csv(_out_path("mo_task", pid, handedness, "reps"), rows, append=True)
 
 
-# Fills in a column for a condition's trials afterwards, such as the imagery answer given
-# after the block. It writes a temporary copy first, so the file is never left half-written.
-def update_task_column(pid, handedness, condition, column, value):
-    path = _out_path("mo_task", pid, handedness, "task")
+# Changes rows of a data file in place: change(row) is called on every row and may edit
+# it. Only works on a column the file already has. It writes a temporary copy first, so
+# the file is never left half-written.
+def _rewrite_csv(path, column, change):
     if not os.path.exists(path):
         return
     try:
@@ -2132,8 +2137,7 @@ def update_task_column(pid, handedness, condition, column, value):
         if column not in fields:
             return
         for row in rows:
-            if row.get("condition") == condition and not row.get(column):
-                row[column] = value
+            change(row)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".csv")
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
@@ -2142,6 +2146,41 @@ def update_task_column(pid, handedness, condition, column, value):
         shutil.move(tmp, path)
     except Exception:
         pass
+
+
+# Fills in a column for a condition's trials afterwards, such as the imagery answer given
+# after the block.
+def update_task_column(pid, handedness, condition, column, value):
+    def change(row):
+        if row.get("condition") == condition and not row.get(column):
+            row[column] = value
+    _rewrite_csv(_out_path("mo_task", pid, handedness, "task"), column, change)
+
+
+# When the experimenter redoes a block, the trials already run in it are kept but marked
+# discarded = 1 in the task, reps and touches files, and the redo is noted in its own file
+# with what the abandoned Spike2 recording should be saved as.
+def discard_block_attempt(pid, handedness, condition, block_index, attempt, size_label,
+                          trials_done, spike2_saved_as):
+    def change(row):
+        if (row.get("condition") == condition
+                and row.get("block_index") == str(block_index)
+                and row.get("block_attempt") == str(attempt)):
+            row["discarded"] = 1
+    for name in ("task", "reps", "touches"):
+        _rewrite_csv(_out_path("mo_task", pid, handedness, name), "discarded", change)
+    row = {
+        "participant_id":  pid,
+        "handedness":      handedness,
+        "condition":       condition,
+        "block_index":     block_index,
+        "size_label":      size_label,
+        "block_attempt":   attempt,
+        "trials_done":     trials_done,
+        "timestamp":       _stamp(),
+        "spike2_saved_as": spike2_saved_as,
+    }
+    _write_csv(_out_path("mo_task", pid, handedness, "redo"), [row], append=True)
 
 
 # Saves the feeling-or-seeing answer, and copies it into that condition's trial rows.
@@ -3544,13 +3583,48 @@ CONDITION_META = {
 }
 
 
+# Experimenter only, reached with Shift+R on a Trial Complete or Block Complete screen:
+# asks whether to throw away the block so far and run it again from trial 1. Says what
+# to do in Spike2 first. Returns True to redo, False to go back.
+def screen_confirm_redo(label, block_index, trials_done, spike2_file, saved_as):
+    lines = [
+        f"{label}, block {block_index}: {trials_done} trial"
+        f"{'' if trials_done == 1 else 's'} done so far. They stay in the data files, "
+        f"marked discarded, and the block starts again from trial 1.",
+        f"Before tapping Redo Block: in Spike2, stop sampling and save this recording as "
+        f"{saved_as} (if it is already saved as {spike2_file}, rename it), then start a "
+        f"new file. The new recording is {spike2_file}.",
+    ]
+    max_w = min(W - s(200), s(1100))
+    while True:
+        screen.fill(BACKGROUND)
+        text_c("Redo This Block?", font_title, ERROR, W // 2, s(140))
+        top = s(240)
+        for para in lines:
+            for line in wrap_text(para, font_body, max_w):
+                text_c(line, font_body, TEXT, W // 2, top)
+                top += lh(font_body)
+            top += s(24)
+        back_btn = draw_continue_button("Go Back", side="left")
+        redo_btn = draw_continue_button("Redo Block", side="right")
+        flip()
+        clock.tick(FPS)
+        for event in pygame.event.get():
+            check_quit(event)
+            if is_button_touched(event, back_btn):
+                return False
+            if is_button_touched(event, redo_btn):
+                return True
+
+
 # Pause screen after each trial. After a block's last trial it becomes the Block Complete
 # screen, a rest for the participant. Between blocks of a condition, Continue stays grey
 # and locked for BLOCK_REST_SECONDS, counting down the seconds left, then turns orange.
-# It warns if the marker link has been lost.
+# It warns if the marker link has been lost. Shift+R lets the experimenter redo the block
+# (see screen_confirm_redo); the screen then returns "redo".
 @skippable()
 def screen_trial_complete(handedness, label, trial_in_block, n_trials,
-                          block_index=1, n_blocks=1):
+                          block_index=1, n_blocks=1, redo=None):
     block_done = trial_in_block >= n_trials
     last_block = block_index >= n_blocks
     unlock_at  = 0
@@ -3593,6 +3667,12 @@ def screen_trial_complete(handedness, label, trial_in_block, n_trials,
         arm_touch(touch_rect(btn))
         for event in pump():
             check_quit(event)
+            if (redo is not None and event.type == pygame.KEYDOWN
+                    and event.key == pygame.K_r and event.mod & pygame.KMOD_SHIFT):
+                disarm_touch()
+                if redo():
+                    return "redo"
+                break
             if unlocked and is_button_activated(event, btn):
                 disarm_touch()
                 return
@@ -3619,18 +3699,21 @@ def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
     BLOCK_CTX["cond_order_index"]   = order_index
     BLOCK_CTX["condition_position"] = cond_position
     seen = {size: 0 for size in SIZES}
-    i    = 0
     for b, size in enumerate(block_seq, 1):
         amp         = amps[size]
+        spike2_file = spike2_name(pid, condition, b, size)
         BLOCK_CTX["block_index"] = b
-        BLOCK_CTX["spike2_file"] = spike2_name(pid, condition, b, size)
-        for t in range(1, TRIALS_PER_BLOCK + 1):
-            i += 1
-            seen[size] += 1
+        BLOCK_CTX["spike2_file"] = spike2_file
+        attempt = 1
+        t       = 1
+        # One pass of this loop per trial. A redo sends it back to trial 1 of this block
+        # as the next attempt.
+        while t <= TRIALS_PER_BLOCK:
             TRIAL_TRIG["a"] = TRIAL_TRIG["b"] = TRIAL_TRIG["c"] = None
-            BLOCK_CTX["trial_index"]    = i
+            BLOCK_CTX["block_attempt"]  = attempt
+            BLOCK_CTX["trial_index"]    = (b - 1) * TRIALS_PER_BLOCK + t
             BLOCK_CTX["trial_in_block"] = t
-            BLOCK_CTX["size_position"]  = seen[size]
+            BLOCK_CTX["size_position"]  = seen[size] + t
 
             if condition == "ME":
                 run_task_block(pid, handedness, condition, amp, angle, label, size)
@@ -3639,11 +3722,21 @@ def run_condition(condition, pid, handedness, large_amp, small_amp, angle,
             elif condition == "AO":
                 run_ao_block(pid, handedness, size, amp, ao_models[b - 1][t - 1])
 
-            screen_trial_complete(handedness, label, t, TRIALS_PER_BLOCK,
-                                  b, n_blocks)
+            saved_as = f"{spike2_file}_try{attempt}_partial"
+            confirm  = functools.partial(screen_confirm_redo, label, b, t, spike2_file,
+                                         saved_as)
+            if screen_trial_complete(handedness, label, t, TRIALS_PER_BLOCK,
+                                     b, n_blocks, redo=confirm) == "redo":
+                discard_block_attempt(pid, handedness, condition, b, attempt, size, t,
+                                      saved_as)
+                attempt += 1
+                t        = 1
+                continue
+            t += 1
+        seen[size] += TRIALS_PER_BLOCK
 
-    for key in ("trial_index", "block_index", "trial_in_block", "size_position",
-                "spike2_file"):
+    for key in ("trial_index", "block_index", "block_attempt", "trial_in_block",
+                "size_position", "spike2_file"):
         BLOCK_CTX[key] = ""
     if condition in ("KMI", "VMI"):
         run_imagery_slider(pid, handedness, condition)

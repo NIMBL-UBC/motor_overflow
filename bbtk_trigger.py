@@ -65,7 +65,10 @@ CMD_PING   = b"##"
 PING_REPLY = b"XX"
 LINE_UP    = b"80"
 LINE_DOWN  = b"00"
-RESET_WAIT_S = 0.1
+# The box often stays silent the first time its port is opened (it used to take two runs
+# of trigger_test.py to wake it). So open() tries up to this many times, closing and
+# reopening the port between tries, and waits longer after each reset: 0.1 s, 0.5 s, 1 s.
+RESET_WAITS_S = (0.1, 0.5, 1.0)
 
 
 # Turns a technical error into a short message the experimenter can act on.
@@ -84,6 +87,34 @@ def _plain_reason(port, exc):
     if len(text) > 70:
         text = text[:67].rstrip() + "..."
     return f"{port}: {text}" if text else f"{port}: {type(exc).__name__}"
+
+
+# Resets the box and asks 'are you there?'. Returns everything it sent back.
+def _handshake(ser, reset_wait):
+    ser.write(CMD_RESET)
+    time.sleep(reset_wait)
+    if hasattr(ser, "reset_input_buffer"):
+        ser.reset_input_buffer()
+    ser.write(CMD_PING)
+    if not hasattr(ser, "read"):
+        return b""
+    # Read until the reply turns up or the port's 1 s timeout passes with nothing new, so
+    # a stray byte in front of the XX does not hide it.
+    got = b""
+    while PING_REPLY not in got and len(got) < 16:
+        chunk = ser.read(1)
+        if not chunk:
+            break
+        got += chunk
+    return got
+
+
+# Closes a port without raising.
+def _close_quietly(ser):
+    try:
+        ser.close()
+    except Exception:
+        pass
 
 
 # A pretend BBTK box, used when running without the real hardware.
@@ -155,6 +186,7 @@ class Trigger:
         self.error_detail = ""
         self.port = None
         self.answered = False
+        self.open_tries = 0
         self.epoch = clock()
         self.epoch_wallclock = datetime.now().isoformat(timespec="milliseconds")
         self._down = False
@@ -168,15 +200,21 @@ class Trigger:
         """Open `port`, reset the module and put the line up. Returns
         (ok, message). Never raises.
 
-        After the reset the module is pinged (## -> XX). No answer still
-        opens the link, because markers may well still go out, but `answered`
-        is False and the message says so. The reset wait and the ping read
-        (at most the 1 s port timeout) are the only blocking waits anywhere
-        in this module; they happen on the setup screen, never in a trial.
+        After the reset the module is pinged (## -> XX). If it does not
+        answer, the port is closed and opened again and the reset and ping
+        repeated, up to len(RESET_WAITS_S) times. If it still has not
+        answered, one last try sends a single extra byte first, in case the
+        module is half-way through a two-letter command from earlier and so
+        reading every command one letter out; if that fails too, a second
+        byte puts things back as they were. No answer still opens the link,
+        because markers may well still go out, but `answered` is False and
+        the message says so. These waits (a few seconds at worst) are the
+        only blocking waits anywhere in this module; they happen on the setup
+        screen, never in a trial.
 
         RR drops every line, strobe included, so the 1401 may record one
-        marker while the port is being opened. Nothing follows it at the a->b
-        spacing, so the decoder leaves it unmatched."""
+        marker for each try while the port is being opened. Nothing follows
+        them at the a->b spacing, so the decoder leaves them unmatched."""
         self.close()
         # Unless the pretend box is in use, load the add-on that talks to USB ports, with a
         # clear message if it is missing.
@@ -194,17 +232,31 @@ class Trigger:
                 self.error = ("wrong 'serial' package installed - run: "
                               "py -m pip uninstall -y serial pyserial && py -m pip install pyserial")
                 return False, self.error
+        ser = None
+        tries = 0
         try:
-            # Connect, reset the box, check it answers, then raise the marker line ready for use.
-            ser = factory(port, BAUD, timeout=1, write_timeout=0.05)
-            ser.write(CMD_RESET)
-            time.sleep(RESET_WAIT_S)
-            if hasattr(ser, "reset_input_buffer"):
-                ser.reset_input_buffer()
-            ser.write(CMD_PING)
-            reply = ser.read(2) if hasattr(ser, "read") else b""
+            # Connect, reset the box and check it answers, reopening the port between tries.
+            # Then raise the marker line ready for use.
+            for wait in RESET_WAITS_S:
+                if ser is not None:
+                    _close_quietly(ser)
+                    time.sleep(wait)
+                ser = factory(port, BAUD, timeout=1, write_timeout=0.05)
+                tries += 1
+                reply = _handshake(ser, wait)
+                if PING_REPLY in reply:
+                    break
+            else:
+                # Last try: one byte to get back in step, and one more to undo it if not.
+                ser.write(CMD_RESET[:1])
+                tries += 1
+                reply = _handshake(ser, RESET_WAITS_S[-1])
+                if PING_REPLY not in reply:
+                    ser.write(CMD_RESET[:1])
             ser.write(LINE_UP)
         except Exception as exc:
+            if ser is not None:
+                _close_quietly(ser)
             self.enabled = False
             self.error_detail = f"{type(exc).__name__}: {exc}"
             self.error = _plain_reason(port, exc)
@@ -217,8 +269,10 @@ class Trigger:
         self.error = ""
         self._down = False
         self.answered = PING_REPLY in reply
+        self.open_tries = tries
         if self.answered:
-            return True, f"BBTK answered on {port}"
+            after = f" (try {tries})" if tries > 1 else ""
+            return True, f"BBTK answered on {port}{after}"
         return True, (f"{port} opened but the BBTK did not answer - wrong port, "
                       "or module out of sync: unplug it, plug it back in, tap Rescan")
 

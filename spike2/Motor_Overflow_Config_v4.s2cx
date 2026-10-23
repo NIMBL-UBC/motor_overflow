@@ -6,8 +6,8 @@
 		<SampSta t="90" b="0" l="-2" r="2" />
 		<!--Sampling configuration saved to C:\Users\NIMBL\Desktop\Motor Overflow\Pilot\Motor_Overflow_Config.s2cx on September 2, 2026 9:03:53 AM-->
 		<Chans IdealWMRate="20000">
-			<Chan id="0" Type="1" Title="FDI_L" Rate="2000" ActRate="2000" Comment="Left hand EMG" Units="mV" Scale="0.9999989748001111" Divide="2" />
-			<Chan id="1" Type="1" Title="FDI_R" Port="2" Rate="2000" ActRate="2000" Comment="Right hand EMG" Units="mV" Scale="0.9999989748001111" Divide="2" />
+			<Chan id="0" Type="1" Title="FDI_L" Port="2" Rate="2000" ActRate="2000" Comment="Left hand EMG" Units="mV" Scale="0.9999989748001111" Divide="2" />
+			<Chan id="1" Type="1" Title="FDI_R" Port="1" Rate="2000" ActRate="2000" Comment="Right hand EMG" Units="mV" Scale="0.9999989748001111" Divide="2" />
 			<Chan id="31" Type="5" Title="Trig" ActRate="100" Comment="BBTK digital marker, rear Digital Input, strobe on pin 23" />
 			<Chan id="30" Type="5" Title="Keyboard" ActRate="100" Comment="No comment" Units=" volt" Divide="0" />
 		</Chans>
@@ -129,8 +129,8 @@
 		<Script />
 		<CondPorts Count="34">
 			<c id="0" Scale="0.00015258773419191148" Units="mV" Gain="1000" Mode="8" Source="5" LFilt="1000" HFilt="10" />
-			<c id="1" Units="mV" Gain="1000" Mode="5" Source="5" LFilt="1000" HFilt="10" />
-			<c id="2" Scale="0.00015258773419191148" Units="mV" Gain="1000" Mode="4" Source="5" LFilt="1000" HFilt="10" />
+			<c id="1" Scale="0.00015258773419191148" Units="mV" Gain="1000" Mode="8" Source="5" LFilt="500" HFilt="10" />
+			<c id="2" Scale="0.00015258773419191148" Units="mV" Gain="1000" Mode="8" Source="5" LFilt="500" HFilt="10" />
 			<c id="3" Units="mV" Gain="1000" Mode="5" Source="5" LFilt="1000" HFilt="10" />
 			<c id="4" Scale="0.00978550175204873" Offset="2.677980899810791" Units="mV" Gain="100" Source="2" LFilt="500" />
 			<c id="5" Source="2" />
@@ -172,7 +172,7 @@
 			<Font hgt="-14" hthou="-117" wgt="400" paf="16" fnam="Times New Roman" />
 			<Chan Chan="30" DMode="9" DWidth="1" DBoth="1" DHLine="1" DSubMd="2" Ax="0" AdcAxMax="1" FreqAxMax="2" ChType="5" />
 			<Chan Chan="0" DMode="11" DWidth="1" AxMin="-5" AxMax="5" AdcAxMin="-5" AdcAxMax="5" FreqAxMax="1000" AxType="1" ChType="1" BackOv="0" />
-			<Chan Chan="1" DMode="11" DWidth="1" AxMin="-5" AxMax="5" AdcAxMin="-5" AdcAxMax="5" FreqAxMax="50" AxType="1" ChType="1" BackOv="0" />
+			<Chan Chan="1" DMode="11" DWidth="1" AxMin="-5" AxMax="5" AdcAxMin="-5" AdcAxMax="5" FreqAxMax="1000" AxType="1" ChType="1" BackOv="0" />
 			<XInfo Right="15.999997590703053" XAxSmall="5" CRBack="0" VCLabMode="2" HCLabMode="1" VCCount="3">
 				<VCur id="0" LabMode="2" LabPos="0.2" Num="0" />
 				<VCur id="1" Pos="198.0312133045581" LabMode="2" LabPos="0.2" Num="1" />

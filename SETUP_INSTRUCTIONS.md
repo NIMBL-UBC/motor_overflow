@@ -249,6 +249,15 @@ opened the port, and, last, the two baseline markers 15 s apart.
 If a Trial Complete screen shows **Trigger link lost — tell the experimenter**,
 note the trial and let the session finish; see §9.
 
+**Redo a block:** if a block goes wrong (participant misunderstood, electrode
+came off), press `Shift+R` on any Trial Complete or Block Complete screen of
+that block. Before tapping Redo Block on the confirm screen: stop sampling,
+save the recording as `{pid}_mo_{COND}_{S|L}_b{n}_try{k}_partial.smrx` (the
+screen shows the exact name; rename it if it was already saved under the
+normal name), and start a new file. The block restarts at trial 1 and is
+recorded under the normal name. In the task data, keep rows with
+`discarded` = 0.
+
 **Crash:** stop sampling, save as `{pid}_mo_{COND}_{S|L}_b{n}_partial.smrx` (the script
 skips it). To rerun the same ID, first move that ID's files out of every
 `Desktop\motor_overflow\mo_*` folder into an archive folder, then restart the

@@ -31,7 +31,7 @@ three per trial (finger on the X, trial clock starts, closing bell), recorded
 on a Digital Marker channel. Each condition is four blocks of 8 trials, one
 target size per block (Small, Large, Small, Large or the reverse,
 counterbalanced), and each block is recorded to its own Spike2 file, 16 per
-session. The straight cable supplied with the BBTK carries only the strobe,
+session, after a 30 s resting baseline in a file of its own. The straight cable supplied with the BBTK carries only the strobe,
 so every marker reads `AA`; a Spike2 script then labels each file's 8 trials
 `1a 1b 1c … 8c` by their 2.2 s / 15 s spacing.
 

@@ -58,6 +58,7 @@ cd %USERPROFILE%\Desktop\motor_overflow
 | `set MO_TRIGGER_MOCK=1` | Makes the next task run use a fake port (setup screen shows MOCK MODE in red). For dry runs only. |
 | `set MO_TRIGGER_MOCK=` | Clears mock mode in this window. Or close the window. |
 | `Esc` (in the task) | Quits, puts the line back up, releases the port. |
+| `Shift+R` (on a Trial Complete or Block Complete screen) | Redo the current block from trial 1. A confirm screen first says what to save the current Spike2 recording as (`{pid}_mo_{COND}_{S\|L}_b{n}_try{k}_partial`, skipped by the label script). Trials already run stay in the task, reps and touches files with `discarded` = 1; the redo is logged in `{pid}_{hand}_mo_redo.csv`. Only the block in progress (or just finished) can be redone. |
 | `Shift+S` (in the task) | Skips to the next screen. A skipped trial ends at once and writes **no** data. A skipped question saves a placeholder: hand rh, the highest unused ID, age 0, sex blank, culture/gender "prefer not to answer", MIQ-3 4s, MAAS 3s, TLX 50s, imagery slider 0, AO imagery blank, calibration a 250 px reach. |
 
 ## Spike2 PC (no Command Prompt needed)

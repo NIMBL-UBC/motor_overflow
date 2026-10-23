@@ -1,0 +1,76 @@
+' smrx_to_mat.s2s  --  Motor Overflow: batch export .smrx files to MATLAB .mat
+' Version 1.0 (Spike2 10.15)
+'
+' UNTESTED until it has been run once on the lab PC (see the VERIFY lines).
+'
+' What it does:
+'   1. asks for a folder,
+'   2. for every .smrx in that folder (not subfolders), exports every channel
+'      over the whole recording to a .mat with the same base name, saved
+'      beside it: 001_mo_AO.smrx -> 001_mo_AO.mat,
+'   3. overwrites any .mat that is already there,
+'   4. closes each .smrx without saving, so the data files are never changed.
+' MATLAB variable names are Spike2's defaults, which are built from the
+' .smrx name and channel number (e.g. x001_mo_AO_Ch1).
+'
+' Lines marked VERIFY use script functions or arguments not confirmed
+' against the Spike2 10 documentation. Check them on the lab PC first.
+
+const MAXCHANS% := 400;
+
+' ---- main -------------------------------------------------------------------
+var folder$, files$[1000], nFiles%, i%, fh%, base$, res%;
+var nDone% := 0, nBad% := 0;
+
+' VERIFY: FilePathSet with an empty path and a prompt opens a folder browser
+if FilePathSet("", 0, "Select the folder holding the .smrx files to export") <> 0 then
+    halt;
+endif;
+folder$ := FilePath$(0);
+' VERIFY: FileList type 0 = data files, filtered by the mask
+nFiles% := FileList(files$[], 0, "*.smrx");
+if nFiles% <= 0 then
+    Message("smrx_to_mat: no .smrx files in\n%s", folder$);
+    halt;
+endif;
+
+for i% := 0 to nFiles%-1 do
+    base$ := Left$(files$[i%], Len(files$[i%]) - 5);     ' drop ".smrx"
+    ' VERIFY: FilePath$ returns the folder with a trailing backslash
+    fh% := FileOpen(folder$ + files$[i%], 0, 0);
+    if fh% > 0 then
+        res% := ExportMat%(folder$ + base$ + ".mat");
+        if res% = 0 then
+            nDone% += 1;
+            PrintLog("Exported %s.mat\n", base$);
+        else
+            nBad% += 1;
+            PrintLog("FAILED %s (code %d)\n", files$[i%], res%);
+        endif;
+        FileClose(0, -1);                       ' -1 = close without saving
+    else
+        nBad% += 1;
+        PrintLog("Could not open %s (%d)\n", files$[i%], fh%);
+    endif;
+next;
+
+Message("smrx_to_mat: %d file(s) exported, %d failed.\nSee the Log window for details.", nDone%, nBad%);
+halt;
+
+' ---- export every channel of the current file -------------------------------
+func ExportMat%(matname$)
+var list%[MAXCHANS%+1], n%, k%, spec$;
+' VERIFY: ChanList with no mask lists every channel; list%[0] holds the count
+n% := ChanList(list%[]);
+if n% <= 0 then return -999 endif;
+spec$ := Str$(list%[1]);
+for k% := 2 to n% do
+    spec$ += "," + Str$(list%[k%]);
+next;
+' VERIFY: ExportChanList(1) clears the list; (sTime, eTime, cSpc) adds channels
+ExportChanList(1);
+ExportChanList(0, MaxTime(), spec$);
+' VERIFY: FileSaveAs type 100 = MATLAB export using the export channel list;
+'         third argument 1 = overwrite an existing file without asking
+return FileSaveAs(matname$, 100, 1);
+end;
