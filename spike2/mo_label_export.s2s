@@ -15,7 +15,7 @@
 '      The .mat export is gone too; use Spike2's own File > Export As
 '      if a .mat file is needed.
 '
-' UNTESTED until the bench test in SETUP_INSTRUCTIONS.md Part D passes.
+' UNTESTED until the bench test in files/SETUP_INSTRUCTIONS.md Part D passes.
 '
 ' What it does, for every .smrx in a folder (or one chosen file). One file is
 ' one block, named {pid}_mo_{COND}_{S|L}_b{n}.smrx (a hand, rh/lh, may follow

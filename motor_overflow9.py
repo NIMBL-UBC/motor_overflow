@@ -9,7 +9,6 @@ import os
 import csv
 import functools
 import glob
-import winreg
 import array
 import shutil
 import tempfile
@@ -202,22 +201,9 @@ class _ContactGeometry:
 CONTACT_GEOMETRY = _ContactGeometry()
 
 
-# Finds this computer's Desktop folder, even if it has been moved (for example into OneDrive).
-def get_desktop():
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-        )
-        path, _ = winreg.QueryValueEx(key, "Desktop")
-        return os.path.expandvars(path)
-    except Exception:
-        return os.path.join(os.path.expanduser("~"), "Desktop")
-
-DESKTOP = get_desktop()
-
-# All data files are saved in a 'motor_overflow' folder on the Desktop.
-STUDY_ROOT = os.path.join(DESKTOP, "motor_overflow")
+# All data files are saved in the folder this script lives in (the motor_overflow folder),
+# wherever that folder has been put.
+STUDY_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 # Colours, as amounts of red, green and blue from 0 to 255. A fourth number sets how
@@ -313,12 +299,12 @@ def spike2_name(pid, condition, block_index, size):
     return f"{pid}_mo_{condition}_{size[0]}_b{block_index}"
 
 
-# The folder this file is in, which holds the videos, bell sound and logo.
+# The media folder beside this file, which holds the videos, bell sound and logo.
 # There is one video for each hand model (a or b), hand (rh or lh) and size.
-_HERE = os.path.dirname(os.path.abspath(__file__))
+_MEDIA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
 AO_HAND_MODELS = ["a", "b"]
 AO_VIDEO_PATHS = {
-    (model, hand, size): os.path.join(_HERE, f"ao_video_{model}_{hand}_{size.lower()}.mp4")
+    (model, hand, size): os.path.join(_MEDIA, f"ao_video_{model}_{hand}_{size.lower()}.mp4")
     for model in AO_HAND_MODELS
     for hand in ("rh", "lh")
     for size in ("Small", "Large")
@@ -711,7 +697,7 @@ pygame.event.set_blocked(pygame.FINGERMOTION)
 
 # The bell that starts and ends each trial. If it will not load, the task carries on
 # without it.
-BELL_PATH = os.path.join(_HERE, "bell.wav")
+BELL_PATH = os.path.join(_MEDIA, "bell.wav")
 try:
     _bell = pygame.mixer.Sound(BELL_PATH)
 except Exception:
@@ -970,7 +956,7 @@ def lh(font, mult=1.10):
 
 try:
     # Load the lab logo for the welcome screen, if the file is there.
-    raw  = pygame.image.load(os.path.join(_HERE, "nimbl_logo.png"))
+    raw  = pygame.image.load(os.path.join(_MEDIA, "nimbl_logo.png"))
     _lh  = s(100)
     logo = pygame.transform.smoothscale(raw, (int(raw.get_width() * _lh / raw.get_height()), _lh))
 except Exception:
